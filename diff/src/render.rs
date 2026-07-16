@@ -181,9 +181,9 @@ fn render_mermaid_snapshot_body(
         writeln!(
             output,
             "{indent}{} -->|\"{}\"| {}",
-            node_ref(node_prefix, edge.dependency),
+            node_ref(node_prefix, edge.dependent),
             edge_state_name(*state),
-            node_ref(node_prefix, edge.dependent)
+            node_ref(node_prefix, edge.dependency)
         )
         .unwrap();
     }
@@ -233,8 +233,8 @@ fn render_dot_snapshot_body(
         writeln!(
             output,
             "{indent}{} -> {} [label=\"{}\"] ;",
-            node_ref(node_prefix, edge.dependency),
             node_ref(node_prefix, edge.dependent),
+            node_ref(node_prefix, edge.dependency),
             edge_state_name(*state)
         )
         .unwrap();
@@ -333,9 +333,9 @@ fn render_node_label(node: &NodeSnapshot, line_break: &str) -> String {
 
 fn render_edge(edge: Edge, node_labels: &BTreeMap<NodeId, String>) -> String {
     format!(
-        "{} -> {}",
-        labeled_id(edge.dependency, node_labels),
-        labeled_id(edge.dependent, node_labels)
+        "{} depends on {}",
+        labeled_id(edge.dependent, node_labels),
+        labeled_id(edge.dependency, node_labels)
     )
 }
 
@@ -424,7 +424,7 @@ fn edge_state_name(state: EdgeState) -> &'static str {
 }
 
 fn mermaid_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value.replace('\\', "\\\\").replace('"', "#quot;")
 }
 
 fn dot_escape(value: &str) -> String {

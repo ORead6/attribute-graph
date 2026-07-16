@@ -13,6 +13,7 @@ use attribute_graph_diff::{
 };
 
 const I64: TypeDescriptor = TypeDescriptor::new("i64");
+const STRING: TypeDescriptor = TypeDescriptor::new("String");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputFormat {
@@ -22,12 +23,26 @@ enum OutputFormat {
     All,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Scenario {
+    Basic,
+    SameOutput,
+    Conditional,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CliOptions {
+    format: OutputFormat,
+    scenario: Scenario,
+}
+
 #[derive(Debug)]
 enum CliError {
     Graph(GraphError),
     MissingLatestSnapshot,
     UnknownArgument(String),
     UnknownFormat(String),
+    UnknownScenario(String),
 }
 
 impl fmt::Display for CliError {
@@ -37,6 +52,7 @@ impl fmt::Display for CliError {
             Self::MissingLatestSnapshot => write!(f, "diff session did not produce a snapshot"),
             Self::UnknownArgument(argument) => write!(f, "unknown argument {argument:?}"),
             Self::UnknownFormat(format) => write!(f, "unknown format {format:?}"),
+            Self::UnknownScenario(scenario) => write!(f, "unknown scenario {scenario:?}"),
         }
     }
 }
@@ -55,6 +71,24 @@ struct SumRule {
     rhs: Attribute<i64>,
 }
 
+#[derive(Debug)]
+struct CappedRule {
+    input: Attribute<i64>,
+    cap: i64,
+}
+
+#[derive(Debug)]
+struct LabelRule {
+    input: Attribute<i64>,
+}
+
+#[derive(Debug)]
+struct ConditionalPriceRule {
+    use_sale_price: Attribute<bool>,
+    sale_price: Attribute<i64>,
+    regular_price: Attribute<i64>,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -68,15 +102,15 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), CliError> {
-    let Some(format) = parse_args()? else {
+    let Some(options) = parse_args()? else {
         println!("{}", usage());
         return Ok(());
     };
 
-    let session = run_demo_scenario()?;
+    let session = run_scenario(options.scenario)?;
     ensure_session_has_snapshots(&session)?;
 
-    match format {
+    match options.format {
         OutputFormat::Text => {
             print!("{}", render_text_timeline(&session));
         }
@@ -87,6 +121,8 @@ fn run() -> Result<(), CliError> {
             print!("{}", render_dot_timeline(&session));
         }
         OutputFormat::All => {
+            println!("# Scenario: {}", scenario_name(options.scenario));
+            println!();
             println!("# Text Timeline");
             println!("{}", render_text_timeline(&session));
             println!("# Mermaid Timeline");
@@ -110,9 +146,12 @@ fn ensure_session_has_snapshots(session: &DiffSession) -> Result<(), CliError> {
         .ok_or(CliError::MissingLatestSnapshot)
 }
 
-fn parse_args() -> Result<Option<OutputFormat>, CliError> {
+fn parse_args() -> Result<Option<CliOptions>, CliError> {
     let mut args = env::args().skip(1);
-    let mut format = OutputFormat::All;
+    let mut options = CliOptions {
+        format: OutputFormat::All,
+        scenario: Scenario::Basic,
+    };
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -121,17 +160,27 @@ fn parse_args() -> Result<Option<OutputFormat>, CliError> {
                 let value = args
                     .next()
                     .ok_or_else(|| CliError::UnknownFormat("<missing>".to_string()))?;
-                format = parse_format(&value)?;
+                options.format = parse_format(&value)?;
             }
             value if value.starts_with("--format=") => {
                 let value = value.trim_start_matches("--format=");
-                format = parse_format(value)?;
+                options.format = parse_format(value)?;
+            }
+            "--scenario" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| CliError::UnknownScenario("<missing>".to_string()))?;
+                options.scenario = parse_scenario(&value)?;
+            }
+            value if value.starts_with("--scenario=") => {
+                let value = value.trim_start_matches("--scenario=");
+                options.scenario = parse_scenario(value)?;
             }
             _ => return Err(CliError::UnknownArgument(arg)),
         }
     }
 
-    Ok(Some(format))
+    Ok(Some(options))
 }
 
 fn parse_format(value: &str) -> Result<OutputFormat, CliError> {
@@ -144,14 +193,40 @@ fn parse_format(value: &str) -> Result<OutputFormat, CliError> {
     }
 }
 
+fn parse_scenario(value: &str) -> Result<Scenario, CliError> {
+    match value {
+        "basic" => Ok(Scenario::Basic),
+        "same-output" => Ok(Scenario::SameOutput),
+        "conditional" => Ok(Scenario::Conditional),
+        _ => Err(CliError::UnknownScenario(value.to_string())),
+    }
+}
+
+fn scenario_name(scenario: Scenario) -> &'static str {
+    match scenario {
+        Scenario::Basic => "basic",
+        Scenario::SameOutput => "same-output",
+        Scenario::Conditional => "conditional",
+    }
+}
+
 fn usage() -> &'static str {
-    "Usage: cargo run --manifest-path diff/Cargo.toml -- [--format text|mermaid|dot|all]\n\
+    "Usage: cargo run --manifest-path diff/Cargo.toml -- [--scenario basic|same-output|conditional] [--format text|mermaid|dot|all]\n\
      \n\
      Runs a built-in AttributeGraph scenario and prints graph diffs for visual debugging.\n\
+     Default scenario: basic\n\
      Default format: all"
 }
 
-fn run_demo_scenario() -> Result<DiffSession, GraphError> {
+fn run_scenario(scenario: Scenario) -> Result<DiffSession, GraphError> {
+    match scenario {
+        Scenario::Basic => run_basic_scenario(),
+        Scenario::SameOutput => run_same_output_scenario(),
+        Scenario::Conditional => run_conditional_scenario(),
+    }
+}
+
+fn run_basic_scenario() -> Result<DiffSession, GraphError> {
     let mut graph = AttributeGraph::new();
     let mut session = DiffSession::new();
 
@@ -199,6 +274,111 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
     Ok(session)
 }
 
+fn run_same_output_scenario() -> Result<DiffSession, GraphError> {
+    let mut graph = AttributeGraph::new();
+    let mut session = DiffSession::new();
+
+    session.capture("empty graph", &graph)?;
+
+    let price = graph.add_static_attribute(12_i64);
+    let shipping = graph.add_static_attribute(5_i64);
+    session.label_attribute(price.attribute(), "price");
+    session.label_attribute(shipping.attribute(), "shipping");
+
+    let capped_price = graph.add_dynamic_attribute::<i64>(boxed_rule(
+        CappedRule {
+            input: price.attribute(),
+            cap: 10,
+        },
+        update_capped,
+        I64,
+        "min(price, 10)",
+    ))?;
+    session.label_attribute(capped_price.attribute(), "capped price");
+
+    let price_label = graph.add_dynamic_attribute::<String>(boxed_rule(
+        LabelRule {
+            input: capped_price.attribute(),
+        },
+        update_label,
+        STRING,
+        "label capped price",
+    ))?;
+    session.label_attribute(price_label.attribute(), "price label");
+
+    let capped_total = graph.add_dynamic_attribute::<i64>(boxed_rule(
+        SumRule {
+            lhs: capped_price.attribute(),
+            rhs: shipping.attribute(),
+        },
+        update_sum,
+        I64,
+        "capped price + shipping",
+    ))?;
+    session.label_attribute(capped_total.attribute(), "capped total");
+    session.capture("created attributes", &graph)?;
+
+    let _ = graph.read(capped_total)?;
+    let _ = graph.read(price_label)?;
+    session.capture("read dependents", &graph)?;
+
+    graph.set_static(price, 13)?;
+    session.capture("price changed above cap", &graph)?;
+
+    let _ = graph.read(capped_total)?;
+    let _ = graph.read(price_label)?;
+    session.capture("read dependents again", &graph)?;
+
+    Ok(session)
+}
+
+fn run_conditional_scenario() -> Result<DiffSession, GraphError> {
+    let mut graph = AttributeGraph::new();
+    let mut session = DiffSession::new();
+
+    session.capture("empty graph", &graph)?;
+
+    let use_sale_price = graph.add_static_attribute(true);
+    let sale_price = graph.add_static_attribute(7_i64);
+    let regular_price = graph.add_static_attribute(10_i64);
+    session.label_attribute(use_sale_price.attribute(), "use sale price");
+    session.label_attribute(sale_price.attribute(), "sale price");
+    session.label_attribute(regular_price.attribute(), "regular price");
+
+    let selected_price = graph.add_dynamic_attribute::<i64>(boxed_rule(
+        ConditionalPriceRule {
+            use_sale_price: use_sale_price.attribute(),
+            sale_price: sale_price.attribute(),
+            regular_price: regular_price.attribute(),
+        },
+        update_conditional_price,
+        I64,
+        "selected price",
+    ))?;
+    session.label_attribute(selected_price.attribute(), "selected price");
+    session.capture("created attributes", &graph)?;
+
+    let _ = graph.read(selected_price)?;
+    session.capture("read selected price", &graph)?;
+
+    graph.set_static(use_sale_price, false)?;
+    session.capture("switched to regular price", &graph)?;
+
+    let _ = graph.read(selected_price)?;
+    session.capture("read selected after switch", &graph)?;
+
+    graph.set_static(sale_price, 6)?;
+    session.capture("inactive sale price changed", &graph)?;
+
+    graph.set_static(regular_price, 11)?;
+    session.capture("active regular price changed", &graph)?;
+
+    let _ = graph.read(selected_price)?;
+    session.capture("read selected again", &graph)?;
+
+    Ok(session)
+}
+
 fn boxed_rule<T: 'static>(
     body: T,
     update: UpdateFn,
@@ -234,5 +414,40 @@ fn update_sum(handle: RuleHandle, context: &mut EvaluationContext<'_>) -> Result
     let rhs = context.read_attribute(rule.rhs)?;
 
     context.set_output_value(lhs + rhs);
+    Ok(())
+}
+
+fn update_capped(
+    handle: RuleHandle,
+    context: &mut EvaluationContext<'_>,
+) -> Result<(), GraphError> {
+    let rule = rule_body::<CappedRule>(handle);
+    let value = context.read_attribute(rule.input)?;
+
+    context.set_output_value(value.min(rule.cap));
+    Ok(())
+}
+
+fn update_label(handle: RuleHandle, context: &mut EvaluationContext<'_>) -> Result<(), GraphError> {
+    let rule = rule_body::<LabelRule>(handle);
+    let value = context.read_attribute(rule.input)?;
+    let label = if value == 10 { "capped" } else { "other" };
+
+    context.set_output_value(label.to_string());
+    Ok(())
+}
+
+fn update_conditional_price(
+    handle: RuleHandle,
+    context: &mut EvaluationContext<'_>,
+) -> Result<(), GraphError> {
+    let rule = rule_body::<ConditionalPriceRule>(handle);
+    let selected_price = if context.read_attribute(rule.use_sale_price)? {
+        context.read_attribute(rule.sale_price)?
+    } else {
+        context.read_attribute(rule.regular_price)?
+    };
+
+    context.set_output_value(selected_price);
     Ok(())
 }

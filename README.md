@@ -100,6 +100,27 @@ pub struct Edge {
 }
 ```
 
+## Diff Visualizer
+
+The visualizer lives in `diff/` and does not change the graph framework code.
+
+Run the default scenario:
+
+```sh
+cargo run --manifest-path diff/Cargo.toml
+```
+
+Run a specific scenario and output format:
+
+```sh
+cargo run --manifest-path diff/Cargo.toml -- --scenario conditional --format mermaid
+```
+
+Available scenarios are `basic`, `same-output`, and `conditional`. Visual
+arrows point from the dependent attribute to the dependency it reads, so an
+arrow from `grand total` to `total` means "`grand total` depends on `total`";
+the framework still stores edges internally as dependency-to-dependent.
+
 ## What Is Still Out Of Scope
 
 This pass intentionally does not include lists, `foreach`, subgraphs,

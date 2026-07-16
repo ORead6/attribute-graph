@@ -184,9 +184,10 @@ fn shows_pending_edges_when_a_source_write_dirties_a_dependent() {
 
     let text = render_text_diff(diff);
     assert!(text.contains("Pending"));
-    assert!(text.contains("lhs (#0) -> total (#2)"));
+    assert!(text.contains("total (#2) depends on lhs (#0)"));
 
     let mermaid = render_mermaid_snapshot(session.latest_snapshot().unwrap());
     assert!(mermaid.contains("Pending"));
+    assert!(mermaid.contains("n2 -->|\"Pending\"| n0"));
     assert!(mermaid.contains("Dirty"));
 }
