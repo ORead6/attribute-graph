@@ -64,6 +64,9 @@ fn captures_node_value_and_edge_changes_as_a_timeline() {
 
     let lhs = graph.add_static_attribute(10_i64);
     let rhs = graph.add_static_attribute(2_i64);
+    session.label_attribute(lhs.attribute(), "lhs");
+    session.label_attribute(rhs.attribute(), "rhs");
+
     let total = graph
         .add_dynamic_attribute::<i64>(boxed_rule(
             SumRule {
@@ -75,6 +78,7 @@ fn captures_node_value_and_edge_changes_as_a_timeline() {
             "lhs + rhs",
         ))
         .unwrap();
+    session.label_attribute(total.attribute(), "total");
     session.capture("created attributes", &graph).unwrap();
 
     let created = session.latest_diff().unwrap();
@@ -119,9 +123,10 @@ fn captures_node_value_and_edge_changes_as_a_timeline() {
     assert!(mermaid.contains("flowchart LR"));
     assert!(mermaid.contains("Settled"));
     assert!(mermaid.contains("lhs + rhs"));
+    assert!(mermaid.contains("total (#2)"));
 
     let mermaid_timeline = render_mermaid_timeline(&session);
-    assert!(mermaid_timeline.contains("flowchart TB"));
+    assert!(mermaid_timeline.contains("flowchart LR"));
     assert!(mermaid_timeline.contains("created attributes"));
     assert!(mermaid_timeline.contains("evaluated total"));
 }
@@ -133,6 +138,9 @@ fn shows_pending_edges_when_a_source_write_dirties_a_dependent() {
 
     let lhs = graph.add_static_attribute(10_i64);
     let rhs = graph.add_static_attribute(2_i64);
+    session.label_attribute(lhs.attribute(), "lhs");
+    session.label_attribute(rhs.attribute(), "rhs");
+
     let total = graph
         .add_dynamic_attribute::<i64>(boxed_rule(
             SumRule {
@@ -144,6 +152,7 @@ fn shows_pending_edges_when_a_source_write_dirties_a_dependent() {
             "lhs + rhs",
         ))
         .unwrap();
+    session.label_attribute(total.attribute(), "total");
 
     graph.read(total).unwrap();
     session.capture("settled", &graph).unwrap();
@@ -175,6 +184,7 @@ fn shows_pending_edges_when_a_source_write_dirties_a_dependent() {
 
     let text = render_text_diff(diff);
     assert!(text.contains("Pending"));
+    assert!(text.contains("lhs (#0) -> total (#2)"));
 
     let mermaid = render_mermaid_snapshot(session.latest_snapshot().unwrap());
     assert!(mermaid.contains("Pending"));

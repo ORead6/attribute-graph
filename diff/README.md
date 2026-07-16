@@ -34,6 +34,7 @@ let mut session = DiffSession::new();
 session.capture("empty", &graph)?;
 
 let price = graph.add_static_attribute(10_i64);
+session.label_attribute(price.attribute(), "price");
 session.capture("added price", &graph)?;
 
 graph.set_static(price, 11)?;

@@ -15,6 +15,14 @@ pub struct GraphSnapshot {
 
 impl GraphSnapshot {
     pub fn capture(label: impl Into<String>, graph: &AttributeGraph) -> Result<Self, GraphError> {
+        Self::capture_with_labels(label, graph, &BTreeMap::new())
+    }
+
+    pub fn capture_with_labels(
+        label: impl Into<String>,
+        graph: &AttributeGraph,
+        node_labels: &BTreeMap<NodeId, String>,
+    ) -> Result<Self, GraphError> {
         let mut nodes = BTreeMap::new();
 
         for id in graph.topological_order()? {
@@ -25,6 +33,7 @@ impl GraphSnapshot {
                 id,
                 NodeSnapshot {
                     id,
+                    label: node_labels.get(&id).cloned(),
                     kind: node.kind(),
                     state: node.state(),
                     value_type: node
@@ -59,6 +68,7 @@ impl GraphSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeSnapshot {
     pub id: NodeId,
+    pub label: Option<String>,
     pub kind: NodeKind,
     pub state: NodeState,
     pub value_type: Option<String>,

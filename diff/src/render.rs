@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use attribute_graph::{Edge, EdgeState, NodeId, NodeKind, NodeState};
@@ -26,7 +27,7 @@ pub fn render_text_snapshot(snapshot: &GraphSnapshot) -> String {
         writeln!(
             &mut output,
             "- {} {}",
-            render_edge(*edge),
+            render_edge(*edge, &snapshot_node_labels(snapshot)),
             edge_state_name(*state)
         )
         .unwrap();
@@ -50,7 +51,12 @@ pub fn render_text_diff(diff: &GraphDiff) -> String {
     }
 
     for change in &diff.changes {
-        writeln!(&mut output, "- {}", render_change(change)).unwrap();
+        writeln!(
+            &mut output,
+            "- {}",
+            render_change(change, &diff.node_labels)
+        )
+        .unwrap();
     }
 
     output
@@ -85,18 +91,28 @@ pub fn render_mermaid_snapshot(snapshot: &GraphSnapshot) -> String {
 
 pub fn render_mermaid_timeline(session: &DiffSession) -> String {
     let mut output = String::new();
-    writeln!(&mut output, "flowchart TB").unwrap();
+    writeln!(&mut output, "flowchart LR").unwrap();
+    let mut anchors = Vec::new();
 
     for (index, snapshot) in session.snapshots().iter().enumerate() {
         let prefix = format!("s{index}_");
+        let anchor = format!("{prefix}timeline_anchor");
+        anchors.push(anchor.clone());
         writeln!(
             &mut output,
             "  subgraph snapshot{index}[\"{}\"]",
             mermaid_escape(&snapshot.label)
         )
         .unwrap();
+        writeln!(&mut output, "    direction TB").unwrap();
+        writeln!(&mut output, "    {anchor}[\" \"]").unwrap();
+        writeln!(&mut output, "    class {anchor} timeline;").unwrap();
         render_mermaid_snapshot_body(&mut output, snapshot, "    ", &prefix);
         writeln!(&mut output, "  end").unwrap();
+    }
+
+    for pair in anchors.windows(2) {
+        writeln!(&mut output, "  {} ~~~ {}", pair[0], pair[1]).unwrap();
     }
 
     write_mermaid_class_defs(&mut output);
@@ -115,7 +131,7 @@ pub fn render_dot_snapshot(snapshot: &GraphSnapshot) -> String {
 pub fn render_dot_timeline(session: &DiffSession) -> String {
     let mut output = String::new();
     writeln!(&mut output, "digraph AttributeGraphTimeline {{").unwrap();
-    writeln!(&mut output, "  rankdir=TB;").unwrap();
+    writeln!(&mut output, "  rankdir=LR;").unwrap();
 
     for (index, snapshot) in session.snapshots().iter().enumerate() {
         let prefix = format!("s{index}_");
@@ -189,6 +205,11 @@ fn write_mermaid_class_defs(output: &mut String) {
         "  classDef maybe fill:#fff8e1,stroke:#f9a825,color:#1b1f23;"
     )
     .unwrap();
+    writeln!(
+        output,
+        "  classDef timeline fill:transparent,stroke:transparent,color:transparent;"
+    )
+    .unwrap();
 }
 
 fn render_dot_snapshot_body(
@@ -220,35 +241,37 @@ fn render_dot_snapshot_body(
     }
 }
 
-fn render_change(change: &GraphChange) -> String {
+fn render_change(change: &GraphChange, node_labels: &BTreeMap<NodeId, String>) -> String {
     match change {
-        GraphChange::NodeAdded(node) => format!("node {} added ({})", id(node.id), node_kind(node)),
+        GraphChange::NodeAdded(node) => {
+            format!("node {} added ({})", node_name(node), node_kind(node))
+        }
         GraphChange::NodeRemoved(node) => {
-            format!("node {} removed ({})", id(node.id), node_kind(node))
+            format!("node {} removed ({})", node_name(node), node_kind(node))
         }
         GraphChange::NodeStateChanged { id, before, after } => format!(
             "node {} state {} -> {}",
-            id_name(*id),
+            labeled_id(*id, node_labels),
             state_name(*before),
             state_name(*after)
         ),
         GraphChange::NodeValueChanged { id, before, after } => format!(
             "node {} value {} -> {}",
-            id_name(*id),
+            labeled_id(*id, node_labels),
             render_optional_value(before.as_ref()),
             render_optional_value(after.as_ref())
         ),
         GraphChange::EdgeAdded { edge, state } => {
             format!(
                 "edge {} added ({})",
-                render_edge(*edge),
+                render_edge(*edge, node_labels),
                 edge_state_name(*state)
             )
         }
         GraphChange::EdgeRemoved { edge, state } => {
             format!(
                 "edge {} removed ({})",
-                render_edge(*edge),
+                render_edge(*edge, node_labels),
                 edge_state_name(*state)
             )
         }
@@ -258,7 +281,7 @@ fn render_change(change: &GraphChange) -> String {
             after,
         } => format!(
             "edge {} state {} -> {}",
-            render_edge(*edge),
+            render_edge(*edge, node_labels),
             edge_state_name(*before),
             edge_state_name(*after)
         ),
@@ -267,7 +290,7 @@ fn render_change(change: &GraphChange) -> String {
 
 fn render_node_line(node: &NodeSnapshot) -> String {
     let mut pieces = vec![
-        id(node.id),
+        node_name(node),
         node_kind(node).to_string(),
         state_name(node.state).to_string(),
     ];
@@ -292,7 +315,7 @@ fn render_node_line(node: &NodeSnapshot) -> String {
 fn render_node_label(node: &NodeSnapshot, line_break: &str) -> String {
     let mut label = format!(
         "{}{line_break}{} {}",
-        id(node.id),
+        node_name(node),
         node_kind(node),
         state_name(node.state)
     );
@@ -308,11 +331,11 @@ fn render_node_label(node: &NodeSnapshot, line_break: &str) -> String {
     label
 }
 
-fn render_edge(edge: Edge) -> String {
+fn render_edge(edge: Edge, node_labels: &BTreeMap<NodeId, String>) -> String {
     format!(
         "{} -> {}",
-        id_name(edge.dependency),
-        id_name(edge.dependent)
+        labeled_id(edge.dependency, node_labels),
+        labeled_id(edge.dependent, node_labels)
     )
 }
 
@@ -331,12 +354,30 @@ fn render_value(value: &ValueSummary) -> String {
     format!("{} ({})", value.rendered, value.value_type)
 }
 
-fn id(id: NodeId) -> String {
-    id_name(id)
-}
-
 fn id_name(id: NodeId) -> String {
     format!("#{}", id.raw())
+}
+
+fn labeled_id(id: NodeId, node_labels: &BTreeMap<NodeId, String>) -> String {
+    node_labels
+        .get(&id)
+        .map(|label| format!("{label} ({})", id_name(id)))
+        .unwrap_or_else(|| id_name(id))
+}
+
+fn node_name(node: &NodeSnapshot) -> String {
+    node.label
+        .as_ref()
+        .map(|label| format!("{label} ({})", id_name(node.id)))
+        .unwrap_or_else(|| id_name(node.id))
+}
+
+fn snapshot_node_labels(snapshot: &GraphSnapshot) -> BTreeMap<NodeId, String> {
+    snapshot
+        .nodes
+        .values()
+        .filter_map(|node| node.label.as_ref().map(|label| (node.id, label.clone())))
+        .collect()
 }
 
 fn node_ref(prefix: &str, id: NodeId) -> String {

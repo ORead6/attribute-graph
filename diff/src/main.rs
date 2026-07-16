@@ -160,6 +160,10 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
     let price = graph.add_static_attribute(10_i64);
     let quantity = graph.add_static_attribute(2_i64);
     let shipping = graph.add_static_attribute(3_i64);
+    session.label_attribute(price.attribute(), "price");
+    session.label_attribute(quantity.attribute(), "quantity");
+    session.label_attribute(shipping.attribute(), "shipping");
+
     let total = graph.add_dynamic_attribute::<i64>(boxed_rule(
         SumRule {
             lhs: price.attribute(),
@@ -169,6 +173,8 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
         I64,
         "price + quantity",
     ))?;
+    session.label_attribute(total.attribute(), "total");
+
     let grand_total = graph.add_dynamic_attribute::<i64>(boxed_rule(
         SumRule {
             lhs: total.attribute(),
@@ -178,6 +184,7 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
         I64,
         "total + shipping",
     ))?;
+    session.label_attribute(grand_total.attribute(), "grand total");
     session.capture("created attributes", &graph)?;
 
     let _ = graph.read(grand_total)?;

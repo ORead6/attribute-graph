@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use attribute_graph::{Edge, EdgeState, NodeId, NodeState};
 
 use crate::snapshot::{GraphSnapshot, NodeSnapshot, ValueSummary};
@@ -6,6 +8,7 @@ use crate::snapshot::{GraphSnapshot, NodeSnapshot, ValueSummary};
 pub struct GraphDiff {
     pub before_label: String,
     pub after_label: String,
+    pub node_labels: BTreeMap<NodeId, String>,
     pub changes: Vec<GraphChange>,
 }
 
@@ -57,6 +60,7 @@ impl GraphDiff {
         Self {
             before_label: before.label.clone(),
             after_label: after.label.clone(),
+            node_labels: collect_node_labels(before, after),
             changes,
         }
     }
@@ -64,6 +68,18 @@ impl GraphDiff {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
+}
+
+fn collect_node_labels(before: &GraphSnapshot, after: &GraphSnapshot) -> BTreeMap<NodeId, String> {
+    let mut labels = BTreeMap::new();
+
+    for node in before.nodes.values().chain(after.nodes.values()) {
+        if let Some(label) = &node.label {
+            labels.insert(node.id, label.clone());
+        }
+    }
+
+    labels
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
