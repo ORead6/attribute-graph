@@ -5,7 +5,8 @@ use attribute_graph::{
     RuleHandle, TypeDescriptor, UpdateFn,
 };
 use attribute_graph_diff::{
-    DiffSession, GraphChange, render_mermaid_snapshot, render_text_diff, render_text_timeline,
+    DiffSession, GraphChange, render_mermaid_snapshot, render_mermaid_timeline, render_text_diff,
+    render_text_timeline,
 };
 
 const I64: TypeDescriptor = TypeDescriptor::new("i64");
@@ -118,6 +119,11 @@ fn captures_node_value_and_edge_changes_as_a_timeline() {
     assert!(mermaid.contains("flowchart LR"));
     assert!(mermaid.contains("Settled"));
     assert!(mermaid.contains("lhs + rhs"));
+
+    let mermaid_timeline = render_mermaid_timeline(&session);
+    assert!(mermaid_timeline.contains("flowchart TB"));
+    assert!(mermaid_timeline.contains("created attributes"));
+    assert!(mermaid_timeline.contains("evaluated total"));
 }
 
 #[test]

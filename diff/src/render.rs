@@ -77,55 +77,29 @@ pub fn render_text_timeline(session: &DiffSession) -> String {
 pub fn render_mermaid_snapshot(snapshot: &GraphSnapshot) -> String {
     let mut output = String::new();
     writeln!(&mut output, "flowchart LR").unwrap();
+    render_mermaid_snapshot_body(&mut output, snapshot, "  ", "");
+    write_mermaid_class_defs(&mut output);
 
-    if snapshot.nodes.is_empty() {
-        writeln!(&mut output, "  empty[\"empty graph\"]").unwrap();
-    }
+    output
+}
 
-    for node in snapshot.nodes.values() {
+pub fn render_mermaid_timeline(session: &DiffSession) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "flowchart TB").unwrap();
+
+    for (index, snapshot) in session.snapshots().iter().enumerate() {
+        let prefix = format!("s{index}_");
         writeln!(
             &mut output,
-            "  {}[\"{}\"]",
-            node_ref(node.id),
-            mermaid_escape(&render_node_label(node))
+            "  subgraph snapshot{index}[\"{}\"]",
+            mermaid_escape(&snapshot.label)
         )
         .unwrap();
-        writeln!(
-            &mut output,
-            "  class {} {};",
-            node_ref(node.id),
-            state_class(node.state)
-        )
-        .unwrap();
+        render_mermaid_snapshot_body(&mut output, snapshot, "    ", &prefix);
+        writeln!(&mut output, "  end").unwrap();
     }
 
-    for (edge, state) in &snapshot.edges {
-        writeln!(
-            &mut output,
-            "  {} -->|\"{}\"| {}",
-            node_ref(edge.dependency),
-            edge_state_name(*state),
-            node_ref(edge.dependent)
-        )
-        .unwrap();
-    }
-
-    writeln!(
-        &mut output,
-        "  classDef clean fill:#e8f5e9,stroke:#2e7d32,color:#1b1f23;"
-    )
-    .unwrap();
-    writeln!(
-        &mut output,
-        "  classDef dirty fill:#ffebee,stroke:#c62828,color:#1b1f23;"
-    )
-    .unwrap();
-    writeln!(
-        &mut output,
-        "  classDef maybe fill:#fff8e1,stroke:#f9a825,color:#1b1f23;"
-    )
-    .unwrap();
-
+    write_mermaid_class_defs(&mut output);
     output
 }
 
@@ -133,13 +107,102 @@ pub fn render_dot_snapshot(snapshot: &GraphSnapshot) -> String {
     let mut output = String::new();
     writeln!(&mut output, "digraph AttributeGraph {{").unwrap();
     writeln!(&mut output, "  rankdir=LR;").unwrap();
+    render_dot_snapshot_body(&mut output, snapshot, "  ", "");
+    writeln!(&mut output, "}}").unwrap();
+    output
+}
+
+pub fn render_dot_timeline(session: &DiffSession) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "digraph AttributeGraphTimeline {{").unwrap();
+    writeln!(&mut output, "  rankdir=TB;").unwrap();
+
+    for (index, snapshot) in session.snapshots().iter().enumerate() {
+        let prefix = format!("s{index}_");
+        writeln!(&mut output, "  subgraph cluster_{index} {{").unwrap();
+        writeln!(
+            &mut output,
+            "    label=\"{}\";",
+            dot_escape(&snapshot.label)
+        )
+        .unwrap();
+        render_dot_snapshot_body(&mut output, snapshot, "    ", &prefix);
+        writeln!(&mut output, "  }}").unwrap();
+    }
+
+    writeln!(&mut output, "}}").unwrap();
+    output
+}
+
+fn render_mermaid_snapshot_body(
+    output: &mut String,
+    snapshot: &GraphSnapshot,
+    indent: &str,
+    node_prefix: &str,
+) {
+    if snapshot.nodes.is_empty() {
+        writeln!(output, "{indent}{node_prefix}empty[\"empty graph\"]").unwrap();
+    }
 
     for node in snapshot.nodes.values() {
         writeln!(
-            &mut output,
-            "  {} [label=\"{}\", style=filled, fillcolor=\"{}\"] ;",
-            node_ref(node.id),
-            dot_escape(&render_node_label(node)),
+            output,
+            "{indent}{}[\"{}\"]",
+            node_ref(node_prefix, node.id),
+            mermaid_escape(&render_node_label(node, "<br/>"))
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "{indent}class {} {};",
+            node_ref(node_prefix, node.id),
+            state_class(node.state)
+        )
+        .unwrap();
+    }
+
+    for (edge, state) in &snapshot.edges {
+        writeln!(
+            output,
+            "{indent}{} -->|\"{}\"| {}",
+            node_ref(node_prefix, edge.dependency),
+            edge_state_name(*state),
+            node_ref(node_prefix, edge.dependent)
+        )
+        .unwrap();
+    }
+}
+
+fn write_mermaid_class_defs(output: &mut String) {
+    writeln!(
+        output,
+        "  classDef clean fill:#e8f5e9,stroke:#2e7d32,color:#1b1f23;"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "  classDef dirty fill:#ffebee,stroke:#c62828,color:#1b1f23;"
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "  classDef maybe fill:#fff8e1,stroke:#f9a825,color:#1b1f23;"
+    )
+    .unwrap();
+}
+
+fn render_dot_snapshot_body(
+    output: &mut String,
+    snapshot: &GraphSnapshot,
+    indent: &str,
+    node_prefix: &str,
+) {
+    for node in snapshot.nodes.values() {
+        writeln!(
+            output,
+            "{indent}{} [label=\"{}\", style=filled, fillcolor=\"{}\"] ;",
+            node_ref(node_prefix, node.id),
+            dot_escape(&render_node_label(node, "\\n")),
             dot_fill(node.state)
         )
         .unwrap();
@@ -147,17 +210,14 @@ pub fn render_dot_snapshot(snapshot: &GraphSnapshot) -> String {
 
     for (edge, state) in &snapshot.edges {
         writeln!(
-            &mut output,
-            "  {} -> {} [label=\"{}\"] ;",
-            node_ref(edge.dependency),
-            node_ref(edge.dependent),
+            output,
+            "{indent}{} -> {} [label=\"{}\"] ;",
+            node_ref(node_prefix, edge.dependency),
+            node_ref(node_prefix, edge.dependent),
             edge_state_name(*state)
         )
         .unwrap();
     }
-
-    writeln!(&mut output, "}}").unwrap();
-    output
 }
 
 fn render_change(change: &GraphChange) -> String {
@@ -229,20 +289,20 @@ fn render_node_line(node: &NodeSnapshot) -> String {
     pieces.join(" ")
 }
 
-fn render_node_label(node: &NodeSnapshot) -> String {
+fn render_node_label(node: &NodeSnapshot, line_break: &str) -> String {
     let mut label = format!(
-        "{}\\n{} {}",
+        "{}{line_break}{} {}",
         id(node.id),
         node_kind(node),
         state_name(node.state)
     );
 
     if let Some(debug_name) = &node.debug_name {
-        label.push_str(&format!("\\nrule: {debug_name}"));
+        label.push_str(&format!("{line_break}rule: {debug_name}"));
     }
 
     if let Some(value) = &node.cached_value {
-        label.push_str(&format!("\\nvalue: {}", render_value(value)));
+        label.push_str(&format!("{line_break}value: {}", render_value(value)));
     }
 
     label
@@ -279,8 +339,8 @@ fn id_name(id: NodeId) -> String {
     format!("#{}", id.raw())
 }
 
-fn node_ref(id: NodeId) -> String {
-    format!("n{}", id.raw())
+fn node_ref(prefix: &str, id: NodeId) -> String {
+    format!("{prefix}n{}", id.raw())
 }
 
 fn node_kind(node: &NodeSnapshot) -> &'static str {
@@ -327,5 +387,5 @@ fn mermaid_escape(value: &str) -> String {
 }
 
 fn dot_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    value.replace('"', "\\\"")
 }

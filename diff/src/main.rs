@@ -9,7 +9,7 @@ use attribute_graph::{
     TypeDescriptor, UpdateFn,
 };
 use attribute_graph_diff::{
-    DiffSession, render_dot_snapshot, render_mermaid_snapshot, render_text_timeline,
+    DiffSession, render_dot_timeline, render_mermaid_timeline, render_text_timeline,
 };
 
 const I64: TypeDescriptor = TypeDescriptor::new("i64");
@@ -74,35 +74,40 @@ fn run() -> Result<(), CliError> {
     };
 
     let session = run_demo_scenario()?;
-    let latest_snapshot = session
-        .latest_snapshot()
-        .ok_or(CliError::MissingLatestSnapshot)?;
+    ensure_session_has_snapshots(&session)?;
 
     match format {
         OutputFormat::Text => {
             print!("{}", render_text_timeline(&session));
         }
         OutputFormat::Mermaid => {
-            print!("{}", render_mermaid_snapshot(latest_snapshot));
+            print!("{}", render_mermaid_timeline(&session));
         }
         OutputFormat::Dot => {
-            print!("{}", render_dot_snapshot(latest_snapshot));
+            print!("{}", render_dot_timeline(&session));
         }
         OutputFormat::All => {
             println!("# Text Timeline");
             println!("{}", render_text_timeline(&session));
-            println!("# Final Mermaid Snapshot");
+            println!("# Mermaid Timeline");
             println!("```mermaid");
-            print!("{}", render_mermaid_snapshot(latest_snapshot));
+            print!("{}", render_mermaid_timeline(&session));
             println!("```");
-            println!("# Final Graphviz DOT Snapshot");
+            println!("# Graphviz DOT Timeline");
             println!("```dot");
-            print!("{}", render_dot_snapshot(latest_snapshot));
+            print!("{}", render_dot_timeline(&session));
             println!("```");
         }
     }
 
     Ok(())
+}
+
+fn ensure_session_has_snapshots(session: &DiffSession) -> Result<(), CliError> {
+    session
+        .latest_snapshot()
+        .map(|_| ())
+        .ok_or(CliError::MissingLatestSnapshot)
 }
 
 fn parse_args() -> Result<Option<OutputFormat>, CliError> {
@@ -154,7 +159,7 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
 
     let price = graph.add_static_attribute(10_i64);
     let quantity = graph.add_static_attribute(2_i64);
-    let multiplier = graph.add_static_attribute(3_i64);
+    let shipping = graph.add_static_attribute(3_i64);
     let total = graph.add_dynamic_attribute::<i64>(boxed_rule(
         SumRule {
             lhs: price.attribute(),
@@ -164,25 +169,25 @@ fn run_demo_scenario() -> Result<DiffSession, GraphError> {
         I64,
         "price + quantity",
     ))?;
-    let scaled_total = graph.add_dynamic_attribute::<i64>(boxed_rule(
+    let grand_total = graph.add_dynamic_attribute::<i64>(boxed_rule(
         SumRule {
             lhs: total.attribute(),
-            rhs: multiplier.attribute(),
+            rhs: shipping.attribute(),
         },
         update_sum,
         I64,
-        "total + multiplier",
+        "total + shipping",
     ))?;
     session.capture("created attributes", &graph)?;
 
-    let _ = graph.read(scaled_total)?;
-    session.capture("read scaled total", &graph)?;
+    let _ = graph.read(grand_total)?;
+    session.capture("read grand total", &graph)?;
 
     graph.set_static(price, 11)?;
     session.capture("price changed", &graph)?;
 
-    let _ = graph.read(scaled_total)?;
-    session.capture("read scaled total again", &graph)?;
+    let _ = graph.read(grand_total)?;
+    session.capture("read grand total again", &graph)?;
 
     Ok(session)
 }

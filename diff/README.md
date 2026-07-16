@@ -8,7 +8,7 @@ and renders the result as text, Mermaid, or Graphviz DOT.
 
 ## One-Shot CLI
 
-Run the built-in graph scenario and print text, Mermaid, and DOT output:
+Run the built-in graph scenario and print text, Mermaid timeline, and DOT timeline output:
 
 ```bash
 cargo run --manifest-path diff/Cargo.toml

@@ -11,7 +11,7 @@ fn cli_prints_the_demo_timeline() {
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
     assert!(stdout.contains("Snapshot: empty graph"));
-    assert!(stdout.contains("Diff: read scaled total -> price changed"));
+    assert!(stdout.contains("Diff: read grand total -> price changed"));
     assert!(stdout.contains("MaybeDirty"));
     assert!(stdout.contains("Pending"));
 }
@@ -26,8 +26,11 @@ fn cli_prints_mermaid_when_requested() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
-    assert!(stdout.starts_with("flowchart LR"));
+    assert!(stdout.starts_with("flowchart TB"));
     assert!(stdout.contains("price + quantity"));
+    assert!(stdout.contains("total + shipping"));
+    assert!(stdout.contains("MaybeDirty"));
+    assert!(stdout.contains("Pending"));
     assert!(stdout.contains("Settled"));
 }
 
