@@ -6,6 +6,22 @@ This crate intentionally does not modify the graph framework. It observes the
 graph through public APIs, captures labeled snapshots, diffs adjacent snapshots,
 and renders the result as text, Mermaid, or Graphviz DOT.
 
+## One-Shot CLI
+
+Run the built-in graph scenario and print text, Mermaid, and DOT output:
+
+```bash
+cargo run --manifest-path diff/Cargo.toml
+```
+
+Print only one render format:
+
+```bash
+cargo run --manifest-path diff/Cargo.toml -- --format text
+cargo run --manifest-path diff/Cargo.toml -- --format mermaid
+cargo run --manifest-path diff/Cargo.toml -- --format dot
+```
+
 ## Example
 
 ```rust
