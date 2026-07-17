@@ -69,6 +69,21 @@ RuleDescriptor {
 }
 ```
 
+An installed rule definition is semantically immutable. Its callback,
+dependency handles, constants that affect output, and meaning do not change
+behind the graph's back. Every changing input that can affect output or
+dependency selection is represented by a source attribute and read through the
+evaluation context. Non-semantic counters, diagnostics, or caches may change
+only when they cannot affect the output or observed dependencies. A conditional
+rule can choose among fixed dependency handles using a source-backed selector;
+the graph will then commit only the branch actually read.
+
+Changing a rule definition means removing the derived node and creating a new
+one. Recreation produces a new `NodeId`, so downstream rules that stored the old
+handle must also be rebuilt. In other words, changing a rule definition rebuilds
+the affected downstream chain; this simple runtime does not yet provide an
+in-place rule replacement operation.
+
 When a derived node is dirty, the graph:
 
 1. Finds the stored `RuleDescriptor`.
@@ -134,8 +149,9 @@ Removing a node first invalidates anything that may have cached its value:
 The next read must therefore re-run the affected rule instead of returning its
 old cached value. If the rule body still tries to read the removed node, the read
 returns `GraphError::MissingNode`. Removal does not rewrite rule bodies or
-cascade-delete dependents; the rule provider decides whether to remove those
-nodes too or update its rule logic.
+cascade-delete dependents; the rule provider decides whether to rebuild the
+affected downstream chain or select a valid branch that was already part of the
+rule.
 
 ## Failure And Recovery Contract
 
@@ -153,14 +169,20 @@ dependency:
 - dependencies read by the failed attempt are not committed;
 - pending input edges are not consumed by the failed attempt.
 
-The rule provider can repair the external condition or retarget a missing
-dependency and retry the same node. The graph is not poisoned by a returned
-`GraphError`.
+The rule provider can repair the external condition by writing source
+attributes and retry the same node. If the immutable rule definition itself is
+wrong or permanently references a removed dependency, the provider rebuilds it
+and every downstream rule that stored its old handle. The graph is not poisoned
+by a returned `GraphError`.
 
 This is per-node atomicity, not a graph-wide transaction. If the failing rule
 successfully updated a dirty dependency before it failed, that dependency's
-completed update remains committed. Callback panics are outside this recovery
-contract and must not cross a host or FFI boundary.
+completed update remains committed. An unwinding callback panic is not converted
+to a `GraphError` and is not a transaction rollback. The graph removes the
+current evaluation frame before resuming the same panic, so a Rust caller that
+catches the unwind can continue using or retrying the graph. With `panic=abort`,
+the process terminates and no recovery is possible. Panics still must not cross
+a host or FFI boundary.
 
 Related guarantees:
 

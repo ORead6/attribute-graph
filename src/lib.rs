@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_GRAPH_ID: AtomicU64 = AtomicU64::new(1);
@@ -352,6 +353,16 @@ impl AttributeValue for String {
 /// pointer. A Swift bridge might use it as an index into a Swift-owned rule table
 /// or as an opaque retained object pointer. The only function that should
 /// understand the handle is the update callback stored beside it.
+///
+/// A rule body is semantically immutable once its descriptor is installed in the
+/// graph. Dependency handles, constants that affect output, and update semantics
+/// must not be changed behind the graph's back. Changing inputs that can affect
+/// output or dependency selection belong in source attributes and should be read
+/// through [`EvaluationContext`]. Non-semantic counters, diagnostics, or caches
+/// may use interior mutation only when they cannot affect output or observed
+/// dependencies. To change a rule definition, remove the derived node and create
+/// a new one; downstream rules that stored its old [`NodeId`] must also be
+/// rebuilt.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RuleHandle(usize);
 
@@ -374,7 +385,11 @@ impl RuleHandle {
 ///
 /// Returning an error aborts the current node's evaluation without committing
 /// its new output or observed dependency set. The node remains dirty and can be
-/// retried. This recovery guarantee applies to returned errors, not panics.
+/// retried. If the callback unwinds with a panic, the graph removes the node's
+/// evaluation frame and then resumes the same panic. A caller that catches the
+/// unwind can therefore use the graph again, but the panic is not converted to
+/// a [`GraphError`] or treated as a graph-wide rollback. With `panic=abort`, the
+/// process terminates instead and no recovery is possible.
 pub type UpdateFn = fn(RuleHandle, &mut EvaluationContext<'_>) -> Result<(), GraphError>;
 
 /// Optional cleanup callback for the opaque rule body.
@@ -388,7 +403,9 @@ pub type DestroyFn = fn(RuleHandle);
 ///
 /// This is the core "external rules can plug in here" object. The graph stores
 /// the body handle and callback, but it does not know the concrete rule type or
-/// contain the rule logic.
+/// contain the rule logic. The descriptor and the rule body it identifies are
+/// semantically immutable for the lifetime of the derived node. Runtime-varying
+/// evaluation inputs must be modeled as source attributes.
 #[derive(Debug)]
 pub struct RuleDescriptor {
     body: RuleHandle,
@@ -877,7 +894,9 @@ impl AttributeGraph {
     /// prior cache and dependency set remain intact, pending input edges are not
     /// consumed, and a later call retries evaluation. Successful nested updates
     /// performed while reading dependencies are retained; evaluation is atomic
-    /// for this node, not a graph-wide transaction.
+    /// for this node, not a graph-wide transaction. An unwinding callback panic
+    /// is resumed after the graph restores its evaluation stack, so callers that
+    /// catch the unwind can retry or otherwise continue using the graph.
     pub fn update_node(&mut self, id: NodeId) -> Result<UpdateOutcome, GraphError> {
         self.ensure_derived(id)?;
         self.validate_derived_node(id)
@@ -992,13 +1011,17 @@ impl AttributeGraph {
                 dependencies_read: HashSet::new(),
                 output: None,
             };
-            let update_result = update(body, &mut context);
+            let update_result = catch_unwind(AssertUnwindSafe(|| update(body, &mut context)));
             (update_result, context.dependencies_read, context.output)
         };
 
         let popped = self.evaluation_stack.pop();
         debug_assert_eq!(popped, Some(id));
 
+        let update_result = match update_result {
+            Ok(result) => result,
+            Err(payload) => resume_unwind(payload),
+        };
         update_result?;
 
         let output = output.ok_or(GraphError::MissingOutput(id))?;
@@ -1010,7 +1033,7 @@ impl AttributeGraph {
             });
         }
 
-        let changes = self.replace_dependencies(id, dependencies_read)?;
+        let changes = self.commit_dependencies(id, dependencies_read)?;
         let value_changed = output.meaningfully_changed_from(old_value.as_ref());
         let node = self.nodes.get_mut(&id).expect("derived node should exist");
         node.value = Some(output);
@@ -1031,13 +1054,12 @@ impl AttributeGraph {
         })
     }
 
-    /// Replace a derived node's active dependencies.
+    /// Commit the dependency set observed during a successful rule evaluation.
     ///
-    /// Rule evaluation uses this indirectly. Each update starts with a blank read
-    /// set; every `EvaluationContext::read` call records a dependency; then this
-    /// method swaps the old dependency set for the latest read set. That is the
-    /// mechanism that supports future conditional dependencies.
-    pub fn replace_dependencies<I>(
+    /// This stays internal so callers cannot detach a clean node from its actual
+    /// inputs. Evaluation commits the attributes read by an immutable rule;
+    /// removal only detaches edges involving the removed node.
+    fn commit_dependencies<I>(
         &mut self,
         dependent: NodeId,
         dependencies: I,
@@ -1460,4 +1482,47 @@ fn insert_sorted(queue: &mut VecDeque<NodeId>, id: NodeId) {
         .position(|queued| id < *queued)
         .unwrap_or(queue.len());
     queue.insert(index, id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_I64: TypeDescriptor = TypeDescriptor::new("i64");
+
+    fn update_test_constant(
+        _body: RuleHandle,
+        context: &mut EvaluationContext<'_>,
+    ) -> Result<(), GraphError> {
+        context.set_output(ValueStorage::from_i64(1));
+        Ok(())
+    }
+
+    fn test_rule(name: &'static str) -> RuleDescriptor {
+        RuleDescriptor::new(
+            RuleHandle::from_raw(0),
+            update_test_constant,
+            TypeDescriptor::new("test constant"),
+            TEST_I64,
+            name,
+        )
+    }
+
+    #[test]
+    fn dependency_commit_rejects_a_cycle_without_partial_mutation() {
+        let mut graph = AttributeGraph::new();
+        let a = graph.add_derived(test_rule("a"));
+        let b = graph.add_derived(test_rule("b"));
+        let c = graph.add_derived(test_rule("c"));
+
+        graph.commit_dependencies(b, [a]).unwrap();
+        graph.commit_dependencies(c, [b]).unwrap();
+
+        assert_eq!(
+            graph.commit_dependencies(a, [c]),
+            Err(GraphError::CycleDetected)
+        );
+        assert_eq!(graph.edges(), vec![Edge::new(a, b), Edge::new(b, c)]);
+        assert_eq!(graph.topological_order(), Ok(vec![a, b, c]));
+    }
 }

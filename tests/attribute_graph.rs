@@ -46,6 +46,9 @@ struct ConditionalPriceRule {
     regular_price: NodeId,
 }
 
+#[derive(Debug)]
+struct SelfReadingRule;
+
 fn boxed_rule<T: 'static>(
     body: T,
     update: UpdateFn,
@@ -170,6 +173,14 @@ fn update_conditional_price(
     };
 
     context.set_output(ValueStorage::from_i64(selected_price));
+    Ok(())
+}
+
+fn update_self_reading(
+    _handle: RuleHandle,
+    context: &mut EvaluationContext<'_>,
+) -> Result<(), GraphError> {
+    context.read(context.evaluating())?;
     Ok(())
 }
 
@@ -773,47 +784,25 @@ fn output_type_is_checked_against_the_rule_descriptor() {
 }
 
 #[test]
-fn cycles_are_rejected_and_the_existing_graph_is_left_unchanged() {
+fn a_rule_cannot_read_its_own_output() {
     // What this checks:
-    // - Replacing dependencies still guards against cycles.
-    // - A failed replacement does not partially mutate the active edge set.
+    // - Public dependency discovery rejects a self-dependency during evaluation.
+    // - The failed read leaves the node dirty and does not commit an edge.
     let mut graph = AttributeGraph::new();
-
-    let a = graph.add_derived(boxed_rule(
-        ConstantRule {
-            value: ValueStorage::from_static_str("a"),
-        },
-        update_constant,
-        STATIC_STR,
-        "a",
+    let derived = graph.add_derived(boxed_rule(
+        SelfReadingRule,
+        update_self_reading,
+        I64,
+        "self-reading rule",
     ));
-    let b = graph.add_derived(boxed_rule(
-        ConstantRule {
-            value: ValueStorage::from_static_str("b"),
-        },
-        update_constant,
-        STATIC_STR,
-        "b",
-    ));
-    let c = graph.add_derived(boxed_rule(
-        ConstantRule {
-            value: ValueStorage::from_static_str("c"),
-        },
-        update_constant,
-        STATIC_STR,
-        "c",
-    ));
-
-    graph.update_node(a).unwrap();
-    graph.replace_dependencies(b, [a]).unwrap();
-    graph.replace_dependencies(c, [b]).unwrap();
 
     assert_eq!(
-        graph.replace_dependencies(a, [c]),
-        Err(GraphError::CycleDetected)
+        graph.update_node(derived),
+        Err(GraphError::SelfDependency(derived))
     );
-    assert_eq!(graph.edges(), vec![Edge::new(a, b), Edge::new(b, c)]);
-    assert_eq!(graph.topological_order(), Ok(vec![a, b, c]));
+    assert_eq!(graph.node(derived).unwrap().state(), NodeState::Dirty);
+    assert_eq!(graph.dependencies_of(derived), Ok(vec![]));
+    assert!(graph.edges().is_empty());
 }
 
 #[test]
