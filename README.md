@@ -13,6 +13,8 @@ the actual rule logic.
 - Derived nodes store an opaque rule body handle plus an update callback.
 - Public callers can use typed `StaticAttribute<T>` and `DynamicAttribute<T>`
   handles instead of passing raw `NodeId`s around.
+- Every graph has a `GraphId`, and every `NodeId` carries both its owning graph
+  id and a compact graph-local node number.
 - Cached values use `ValueStorage`: a type descriptor plus bytes.
 - Rust-side values use `AttributeValue` to convert to and from cached storage.
 - Rules read dependencies through `EvaluationContext::read`.
@@ -29,6 +31,27 @@ the actual rule logic.
   validated typed value.
 - Recomputed derived values are compared with the previous cached value before
   downstream dependents are dirtied.
+
+## Graph And Node Identity
+
+`AttributeGraph::id()` returns the graph's process-unique `GraphId`. A `NodeId`
+contains that graph id plus its graph-local number:
+
+```text
+g1:n0
+^^ ^^
+|  local node number
+owning graph
+```
+
+`NodeId::raw()` still returns the compact local number used by the visualizer,
+while `NodeId::graph_id()` identifies the owner. The complete `NodeId`, not its
+raw number alone, is the node's identity.
+
+This prevents handles from silently aliasing nodes in another graph. Operations
+that return `Result` report `GraphError::GraphMismatch` when given a foreign
+handle, even if both graphs happen to contain a local node `0`. Optional lookup
+and removal APIs treat a foreign handle as absent.
 
 ## Derived Rule Model
 
@@ -99,6 +122,20 @@ pub struct Edge {
     pub dependent: NodeId,
 }
 ```
+
+## Removing Nodes
+
+Removing a node first invalidates anything that may have cached its value:
+
+- direct dependents become `Dirty`;
+- further descendants become `MaybeDirty`;
+- edges touching the removed node are then detached.
+
+The next read must therefore re-run the affected rule instead of returning its
+old cached value. If the rule body still tries to read the removed node, the read
+returns `GraphError::MissingNode`. Removal does not rewrite rule bodies or
+cascade-delete dependents; the rule provider decides whether to remove those
+nodes too or update its rule logic.
 
 ## Diff Visualizer
 

@@ -2,6 +2,28 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_GRAPH_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Stable identity for one [`AttributeGraph`] instance.
+///
+/// Graph ids make it possible to reject a node handle from another graph even
+/// when both graphs have assigned the same graph-local node number.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GraphId(u64);
+
+impl GraphId {
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for GraphId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "g{}", self.raw())
+    }
+}
 
 /// Stable handle for a node inside the graph.
 ///
@@ -10,11 +32,33 @@ use std::marker::PhantomData;
 /// graph. A Swift bridge, for example, could store this beside an Attribute
 /// value and pass it back when it wants to read or update that attribute.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct NodeId(u64);
+pub struct NodeId {
+    graph: GraphId,
+    local: u64,
+}
 
 impl NodeId {
+    const fn new(graph: GraphId, local: u64) -> Self {
+        Self { graph, local }
+    }
+
+    /// Return the graph that owns this node.
+    pub const fn graph_id(self) -> GraphId {
+        self.graph
+    }
+
+    /// Return the graph-local node number.
+    ///
+    /// This number is useful for compact labels, but it is not globally unique.
+    /// Use the complete `NodeId` when storing or comparing node identities.
     pub const fn raw(self) -> u64 {
-        self.0
+        self.local
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:n{}", self.graph_id(), self.raw())
     }
 }
 
@@ -520,6 +564,10 @@ pub struct UpdateOutcome {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphError {
+    GraphMismatch {
+        expected: GraphId,
+        actual: GraphId,
+    },
     MissingNode(NodeId),
     MissingValue(NodeId),
     MissingOutput(NodeId),
@@ -545,14 +593,18 @@ pub enum GraphError {
 impl fmt::Display for GraphError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingNode(id) => write!(f, "missing node {}", id.raw()),
-            Self::MissingValue(id) => write!(f, "node {} has no cached value", id.raw()),
+            Self::GraphMismatch { expected, actual } => write!(
+                f,
+                "node belongs to graph {actual}, but this operation uses graph {expected}"
+            ),
+            Self::MissingNode(id) => write!(f, "missing node {id}"),
+            Self::MissingValue(id) => write!(f, "node {id} has no cached value"),
             Self::MissingOutput(id) => {
-                write!(f, "rule for node {} did not set an output value", id.raw())
+                write!(f, "rule for node {id} did not set an output value")
             }
-            Self::NotSource(id) => write!(f, "node {} is not a source node", id.raw()),
-            Self::NotDerived(id) => write!(f, "node {} is not a derived node", id.raw()),
-            Self::SelfDependency(id) => write!(f, "node {} cannot depend on itself", id.raw()),
+            Self::NotSource(id) => write!(f, "node {id} is not a source node"),
+            Self::NotDerived(id) => write!(f, "node {id} is not a derived node"),
+            Self::SelfDependency(id) => write!(f, "node {id} cannot depend on itself"),
             Self::CycleDetected => write!(f, "dependency cycle detected"),
             Self::RuleValueTypeMismatch { expected, actual } => write!(
                 f,
@@ -567,14 +619,14 @@ impl fmt::Display for GraphError {
             } => write!(
                 f,
                 "node {} expected value type {}, got {}",
-                node.raw(),
+                node,
                 expected.name(),
                 actual.name()
             ),
             Self::ValueDecodeFailed { node, value_type } => write!(
                 f,
                 "node {} has invalid cached bytes for value type {}",
-                node.raw(),
+                node,
                 value_type.name()
             ),
         }
@@ -588,10 +640,11 @@ impl Error for GraphError {}
 /// Notice what is not here: no concrete rule types and no Swift/Rust UI logic.
 /// The graph just knows how to call an update function, provide an evaluation
 /// context, observe reads, and cache the resulting value.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AttributeGraph {
     // Hash maps keep the first pass easy to read. An arena can replace this
     // later once the behavior is right and stable node indices matter.
+    id: GraphId,
     nodes: HashMap<NodeId, Node>,
     dependents: HashMap<NodeId, HashSet<NodeId>>,
     pending_edges: HashSet<Edge>,
@@ -599,9 +652,27 @@ pub struct AttributeGraph {
     next_node_id: u64,
 }
 
+impl Default for AttributeGraph {
+    fn default() -> Self {
+        Self {
+            id: next_graph_id(),
+            nodes: HashMap::new(),
+            dependents: HashMap::new(),
+            pending_edges: HashSet::new(),
+            evaluation_stack: Vec::new(),
+            next_node_id: 0,
+        }
+    }
+}
+
 impl AttributeGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Return this graph's stable runtime identity.
+    pub const fn id(&self) -> GraphId {
+        self.id
     }
 
     pub fn add_static_attribute<T: AttributeValue>(&mut self, value: T) -> StaticAttribute<T> {
@@ -695,7 +766,19 @@ impl AttributeGraph {
         id
     }
 
+    /// Remove a node and invalidate every dependent that may have cached its value.
+    ///
+    /// Direct dependents become dirty and further descendants become maybe-dirty
+    /// before the removed node's edges are detached. A later read therefore runs
+    /// the affected rule again instead of returning a stale cached value. If that
+    /// rule still reads the removed node, the read returns [`GraphError::MissingNode`].
     pub fn remove_node(&mut self, id: NodeId) -> Option<Node> {
+        if !self.nodes.contains_key(&id) {
+            return None;
+        }
+
+        self.mark_changed(id)
+            .expect("a node checked above should be valid in this graph");
         let node = self.nodes.remove(&id)?;
 
         for dependency in &node.active_dependencies {
@@ -1189,6 +1272,13 @@ impl AttributeGraph {
     }
 
     fn ensure_node(&self, id: NodeId) -> Result<(), GraphError> {
+        if id.graph_id() != self.id {
+            return Err(GraphError::GraphMismatch {
+                expected: self.id,
+                actual: id.graph_id(),
+            });
+        }
+
         if self.nodes.contains_key(&id) {
             Ok(())
         } else {
@@ -1252,10 +1342,20 @@ impl AttributeGraph {
     }
 
     fn next_id(&mut self) -> NodeId {
-        let id = NodeId(self.next_node_id);
-        self.next_node_id += 1;
+        let id = NodeId::new(self.id, self.next_node_id);
+        self.next_node_id = self
+            .next_node_id
+            .checked_add(1)
+            .expect("attribute graph exhausted its node id space");
         id
     }
+}
+
+fn next_graph_id() -> GraphId {
+    NEXT_GRAPH_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map(GraphId)
+        .expect("attribute graph exhausted its graph id space")
 }
 
 /// The only API an external rule needs while it is executing.

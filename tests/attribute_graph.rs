@@ -246,6 +246,31 @@ fn typed_static_and_dynamic_attributes_read_and_write_without_raw_storage() {
 }
 
 #[test]
+fn graph_scoped_ids_reject_handles_from_another_graph() {
+    let mut first = AttributeGraph::new();
+    let first_value = first.add_static_attribute(10_i64);
+
+    let mut second = AttributeGraph::new();
+    let second_value = second.add_static_attribute(99_i64);
+
+    assert_ne!(first.id(), second.id());
+    assert_eq!(first_value.id().raw(), 0);
+    assert_eq!(second_value.id().raw(), 0);
+    assert_eq!(first_value.id().graph_id(), first.id());
+    assert_eq!(second_value.id().graph_id(), second.id());
+    assert_ne!(first_value.id(), second_value.id());
+    assert!(!second.contains_node(first_value.id()));
+
+    let expected_error = GraphError::GraphMismatch {
+        expected: second.id(),
+        actual: first.id(),
+    };
+    assert_eq!(second.read(first_value), Err(expected_error.clone()));
+    assert_eq!(second.set_static(first_value, 11), Err(expected_error));
+    assert_eq!(second.read(second_value), Ok(99));
+}
+
+#[test]
 fn typed_dynamic_attributes_reject_rules_with_the_wrong_output_type() {
     let mut graph = AttributeGraph::new();
 
@@ -830,4 +855,36 @@ fn removing_a_node_removes_active_and_pending_edges_touching_it() {
     assert_eq!(graph.dependents_of(price), Ok(vec![]));
     assert_eq!(graph.dependents_of(quantity), Ok(vec![]));
     assert_eq!(graph.dependencies_of(label), Ok(vec![]));
+    assert_eq!(graph.node(label).unwrap().state(), NodeState::Dirty);
+    assert_eq!(graph.read_value(label), Err(GraphError::MissingNode(total)));
+}
+
+#[test]
+fn removing_a_dependency_never_returns_a_stale_cached_value() {
+    let mut graph = AttributeGraph::new();
+
+    let price = graph.add_source(ValueStorage::from_i64(10));
+    let quantity = graph.add_source(ValueStorage::from_i64(2));
+    let total = graph.add_derived(boxed_rule(
+        SumRule { price, quantity },
+        update_sum,
+        I64,
+        "price * quantity",
+    ));
+    let label = graph.add_derived(boxed_rule(
+        LabelRule { input: total },
+        update_label,
+        STATIC_STR,
+        "label total",
+    ));
+
+    graph.update_node(label).unwrap();
+    assert_eq!(graph.read_value(total).unwrap().as_i64(), Some(20));
+
+    graph.remove_node(price).unwrap();
+
+    assert_eq!(graph.node(total).unwrap().state(), NodeState::Dirty);
+    assert_eq!(graph.node(label).unwrap().state(), NodeState::MaybeDirty);
+    assert_eq!(graph.read_value(total), Err(GraphError::MissingNode(price)));
+    assert_eq!(graph.read_value(label), Err(GraphError::MissingNode(price)));
 }
