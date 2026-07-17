@@ -511,6 +511,24 @@ Downstream layers can coordinate several of these concepts using the scalar
 graph, as the UI consumer contract tests demonstrate, but they remain separate
 responsibilities.
 
+## Source Layout
+
+`src/lib.rs` is only the public facade. The implementation is grouped into
+private modules, and the existing crate-root API is re-exported unchanged:
+
+- `attribute.rs`: typed static, dynamic, and erased attribute handles;
+- `identity.rs`: graph and node identities plus graph-id allocation;
+- `value.rs`: type descriptors, value storage, comparison, and typed codecs;
+- `rule.rs`: opaque rule handles, callbacks, descriptors, and destruction;
+- `node.rs`: node kind, state, cached storage, and dependency ownership;
+- `dependency.rs`: edges, edge states, dependency changes, and update outcomes;
+- `error.rs`: the graph error contract;
+- `graph.rs`: graph storage, lazy evaluation, invalidation, inspection, and
+  evaluation context behavior.
+
+This keeps consumer imports such as `attribute_graph::AttributeGraph` stable
+without making the internal file layout part of the public API.
+
 ## Running The Project
 
 Run the complete graph test suite:
