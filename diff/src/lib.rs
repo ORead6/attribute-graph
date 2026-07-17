@@ -8,5 +8,5 @@ pub use render::{
     render_dot_snapshot, render_dot_timeline, render_mermaid_snapshot, render_mermaid_timeline,
     render_text_diff, render_text_snapshot, render_text_timeline,
 };
-pub use snapshot::{GraphSnapshot, NodeSnapshot, ValueSummary};
+pub use snapshot::{GraphSnapshot, NodeSnapshot, SubgraphSnapshot, ValueSummary};
 pub use timeline::DiffSession;

@@ -22,6 +22,22 @@ cargo run --manifest-path diff/Cargo.toml -- --format mermaid
 cargo run --manifest-path diff/Cargo.toml -- --format dot
 ```
 
+Visualize the SwiftUI-style subgraph lifecycle scenario:
+
+```bash
+cargo run --manifest-path diff/Cargo.toml -- --scenario subgraph --format mermaid
+```
+
+This scenario uses only two attributes and three snapshots. It mounts an
+`AccountRow` inside `SettingsScreen`, resolves the row-height dependency, then
+recursively removes the screen and row together. Mermaid and DOT use nested
+containers for ownership, and the single dependency arrow points from
+`AccountRow.height` to `SettingsScreen.contentHeight`.
+
+Text subgraph additions and removals are deterministic snapshot deltas sorted
+by identity. Their printed order does not represent teardown or destroy-callback
+execution order.
+
 ## Example
 
 ```rust
