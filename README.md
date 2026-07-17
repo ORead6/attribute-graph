@@ -137,6 +137,41 @@ returns `GraphError::MissingNode`. Removal does not rewrite rule bodies or
 cascade-delete dependents; the rule provider decides whether to remove those
 nodes too or update its rule logic.
 
+## Failure And Recovery Contract
+
+A derived-node evaluation is committed only after its callback returns `Ok`,
+sets an output of the declared type, and produces a valid acyclic dependency
+set. Until then, the evaluation is provisional.
+
+When a callback returns an error, omits its output, or reads a missing
+dependency:
+
+- the error is returned to the caller;
+- the node remains `Dirty`, so its next read retries the rule;
+- a previously cached value stays internal but is not returned as a fresh value;
+- the node's previously committed dependencies remain unchanged;
+- dependencies read by the failed attempt are not committed;
+- pending input edges are not consumed by the failed attempt.
+
+The rule provider can repair the external condition or retarget a missing
+dependency and retry the same node. The graph is not poisoned by a returned
+`GraphError`.
+
+This is per-node atomicity, not a graph-wide transaction. If the failing rule
+successfully updated a dirty dependency before it failed, that dependency's
+completed update remains committed. Callback panics are outside this recovery
+contract and must not cross a host or FFI boundary.
+
+Related guarantees:
+
+- writing an equal `Bytewise` source value is a no-op and does not dirty or run
+  dependents;
+- foreign graph handles are rejected before mutation;
+- removing a dependency invalidates its dependent chain before detaching edges;
+- a configured destroy callback runs once when its owning `RuleDescriptor` is
+  dropped. `remove_node` transfers ownership into the returned `Node`, so cleanup
+  happens when that returned node is dropped.
+
 ## Diff Visualizer
 
 The visualizer lives in `diff/` and does not change the graph framework code.

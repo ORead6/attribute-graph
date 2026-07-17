@@ -371,6 +371,10 @@ impl RuleHandle {
 /// long-term model is "external rule provider supplies body plus updater." A
 /// real Swift bridge would usually expose a C ABI trampoline that adapts Swift's
 /// rule object to this Rust-side callback shape.
+///
+/// Returning an error aborts the current node's evaluation without committing
+/// its new output or observed dependency set. The node remains dirty and can be
+/// retried. This recovery guarantee applies to returned errors, not panics.
 pub type UpdateFn = fn(RuleHandle, &mut EvaluationContext<'_>) -> Result<(), GraphError>;
 
 /// Optional cleanup callback for the opaque rule body.
@@ -825,7 +829,9 @@ impl AttributeGraph {
     /// Write a new value into a source node and mark dependents stale if it changed.
     ///
     /// This is the "external state changed" entry point. It does not eagerly
-    /// recompute anything; it just records pending work.
+    /// recompute anything; it just records pending work. An equal bytewise value
+    /// is a no-op and returns an empty dependent list. Values using
+    /// [`ValueComparison::AlwaysChanged`] always invalidate.
     pub fn set_source_value(
         &mut self,
         id: NodeId,
@@ -865,6 +871,13 @@ impl AttributeGraph {
     /// 5. Compare the old cached value with the new output.
     /// 6. Store the callback's output as the cached value.
     /// 7. If the value changed, dirty downstream dependents automatically.
+    ///
+    /// If the callback returns an error, fails to set output, reads a missing
+    /// dependency, or produces an invalid output, this node remains dirty. Its
+    /// prior cache and dependency set remain intact, pending input edges are not
+    /// consumed, and a later call retries evaluation. Successful nested updates
+    /// performed while reading dependencies are retained; evaluation is atomic
+    /// for this node, not a graph-wide transaction.
     pub fn update_node(&mut self, id: NodeId) -> Result<UpdateOutcome, GraphError> {
         self.ensure_derived(id)?;
         self.validate_derived_node(id)
