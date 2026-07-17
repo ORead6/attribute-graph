@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
 
-use attribute_graph::{Edge, EdgeState, NodeId, NodeState};
+use attribute_graph::{Edge, EdgeState, NodeId, NodeState, SubgraphId};
 
-use crate::snapshot::{GraphSnapshot, NodeSnapshot, ValueSummary};
+use crate::snapshot::{GraphSnapshot, NodeSnapshot, SubgraphSnapshot, ValueSummary};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphDiff {
     pub before_label: String,
     pub after_label: String,
     pub node_labels: BTreeMap<NodeId, String>,
+    pub subgraph_labels: BTreeMap<SubgraphId, String>,
     pub changes: Vec<GraphChange>,
 }
 
@@ -19,6 +20,18 @@ impl GraphDiff {
         for (id, before_node) in &before.nodes {
             if !after.nodes.contains_key(id) {
                 changes.push(GraphChange::NodeRemoved(before_node.clone()));
+            }
+        }
+
+        for (id, before_subgraph) in &before.subgraphs {
+            if !after.subgraphs.contains_key(id) {
+                changes.push(GraphChange::SubgraphRemoved(before_subgraph.clone()));
+            }
+        }
+
+        for (id, after_subgraph) in &after.subgraphs {
+            if !before.subgraphs.contains_key(id) {
+                changes.push(GraphChange::SubgraphAdded(after_subgraph.clone()));
             }
         }
 
@@ -61,6 +74,7 @@ impl GraphDiff {
             before_label: before.label.clone(),
             after_label: after.label.clone(),
             node_labels: collect_node_labels(before, after),
+            subgraph_labels: collect_subgraph_labels(before, after),
             changes,
         }
     }
@@ -68,6 +82,21 @@ impl GraphDiff {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
     }
+}
+
+fn collect_subgraph_labels(
+    before: &GraphSnapshot,
+    after: &GraphSnapshot,
+) -> BTreeMap<SubgraphId, String> {
+    let mut labels = BTreeMap::new();
+
+    for subgraph in before.subgraphs.values().chain(after.subgraphs.values()) {
+        if let Some(label) = &subgraph.label {
+            labels.insert(subgraph.id, label.clone());
+        }
+    }
+
+    labels
 }
 
 fn collect_node_labels(before: &GraphSnapshot, after: &GraphSnapshot) -> BTreeMap<NodeId, String> {
@@ -84,6 +113,8 @@ fn collect_node_labels(before: &GraphSnapshot, after: &GraphSnapshot) -> BTreeMa
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphChange {
+    SubgraphAdded(SubgraphSnapshot),
+    SubgraphRemoved(SubgraphSnapshot),
     NodeAdded(NodeSnapshot),
     NodeRemoved(NodeSnapshot),
     NodeStateChanged {

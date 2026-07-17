@@ -1,13 +1,29 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use attribute_graph::{Edge, EdgeState, NodeId, NodeKind, NodeState};
+use attribute_graph::{Edge, EdgeState, NodeId, NodeKind, NodeState, SubgraphId};
 
-use crate::{DiffSession, GraphChange, GraphDiff, GraphSnapshot, NodeSnapshot, ValueSummary};
+use crate::{
+    DiffSession, GraphChange, GraphDiff, GraphSnapshot, NodeSnapshot, SubgraphSnapshot,
+    ValueSummary,
+};
 
 pub fn render_text_snapshot(snapshot: &GraphSnapshot) -> String {
     let mut output = String::new();
     writeln!(&mut output, "Snapshot: {}", snapshot.label).unwrap();
+    let subgraph_labels = snapshot_subgraph_labels(snapshot);
+    if !snapshot.subgraphs.is_empty() {
+        writeln!(&mut output, "Subgraphs:").unwrap();
+        for subgraph in snapshot.subgraphs.values() {
+            writeln!(
+                &mut output,
+                "- {}",
+                render_subgraph_line(subgraph, &subgraph_labels)
+            )
+            .unwrap();
+        }
+    }
+
     writeln!(&mut output, "Nodes:").unwrap();
 
     if snapshot.nodes.is_empty() {
@@ -15,7 +31,12 @@ pub fn render_text_snapshot(snapshot: &GraphSnapshot) -> String {
     }
 
     for node in snapshot.nodes.values() {
-        writeln!(&mut output, "- {}", render_node_line(node)).unwrap();
+        writeln!(
+            &mut output,
+            "- {}",
+            render_node_line(node, &subgraph_labels)
+        )
+        .unwrap();
     }
 
     writeln!(&mut output, "Edges:").unwrap();
@@ -54,7 +75,7 @@ pub fn render_text_diff(diff: &GraphDiff) -> String {
         writeln!(
             &mut output,
             "- {}",
-            render_change(change, &diff.node_labels)
+            render_change(change, &diff.node_labels, &diff.subgraph_labels)
         )
         .unwrap();
     }
@@ -156,37 +177,114 @@ fn render_mermaid_snapshot_body(
     indent: &str,
     node_prefix: &str,
 ) {
-    if snapshot.nodes.is_empty() {
+    if snapshot.nodes.is_empty() && snapshot.subgraphs.is_empty() {
         writeln!(output, "{indent}{node_prefix}empty[\"empty graph\"]").unwrap();
     }
 
-    for node in snapshot.nodes.values() {
-        writeln!(
+    let subgraph_labels = snapshot_subgraph_labels(snapshot);
+    for node in snapshot.nodes.values().filter(|node| {
+        node.subgraph_id
+            .map(|id| !snapshot.subgraphs.contains_key(&id))
+            .unwrap_or(true)
+    }) {
+        render_mermaid_node(output, node, indent, node_prefix, &subgraph_labels);
+    }
+
+    for subgraph in snapshot.subgraphs.values().filter(|subgraph| {
+        subgraph
+            .parent
+            .map(|parent| !snapshot.subgraphs.contains_key(&parent))
+            .unwrap_or(true)
+    }) {
+        render_mermaid_subgraph(
             output,
-            "{indent}{}[\"{}\"]",
-            node_ref(node_prefix, node.id),
-            mermaid_escape(&render_node_label(node, "<br/>"))
-        )
-        .unwrap();
-        writeln!(
-            output,
-            "{indent}class {} {};",
-            node_ref(node_prefix, node.id),
-            state_class(node.state)
-        )
-        .unwrap();
+            snapshot,
+            subgraph,
+            indent,
+            node_prefix,
+            &subgraph_labels,
+        );
     }
 
     for (edge, state) in &snapshot.edges {
         writeln!(
             output,
             "{indent}{} -->|\"{}\"| {}",
-            node_ref(node_prefix, edge.dependent),
+            node_ref(node_prefix, edge.dependency),
             edge_state_name(*state),
-            node_ref(node_prefix, edge.dependency)
+            node_ref(node_prefix, edge.dependent)
         )
         .unwrap();
     }
+}
+
+fn render_mermaid_subgraph(
+    output: &mut String,
+    snapshot: &GraphSnapshot,
+    subgraph: &SubgraphSnapshot,
+    indent: &str,
+    node_prefix: &str,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) {
+    let child_indent = format!("{indent}  ");
+    let reference = subgraph_ref(node_prefix, subgraph.id);
+    writeln!(
+        output,
+        "{indent}subgraph {reference}[\"{}\"]",
+        mermaid_escape(&subgraph_name(subgraph))
+    )
+    .unwrap();
+    writeln!(output, "{child_indent}direction TB").unwrap();
+
+    for node in &subgraph.nodes {
+        if let Some(node) = snapshot.nodes.get(node) {
+            render_mermaid_node(output, node, &child_indent, node_prefix, subgraph_labels);
+        }
+    }
+
+    for child in &subgraph.children {
+        if let Some(child) = snapshot.subgraphs.get(child) {
+            render_mermaid_subgraph(
+                output,
+                snapshot,
+                child,
+                &child_indent,
+                node_prefix,
+                subgraph_labels,
+            );
+        }
+    }
+
+    if subgraph.nodes.is_empty() && subgraph.children.is_empty() {
+        let placeholder = format!("{reference}_empty");
+        writeln!(output, "{child_indent}{placeholder}[\"no attributes\"]").unwrap();
+        writeln!(output, "{child_indent}class {placeholder} scopeempty;").unwrap();
+    }
+
+    writeln!(output, "{indent}end").unwrap();
+}
+
+fn render_mermaid_node(
+    output: &mut String,
+    node: &NodeSnapshot,
+    indent: &str,
+    node_prefix: &str,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) {
+    writeln!(
+        output,
+        "{indent}{}[\"{}\"]",
+        node_ref(node_prefix, node.id),
+        mermaid_escape(&render_node_label(node, "<br/>", subgraph_labels))
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "{indent}class {} {};",
+        node_ref(node_prefix, node.id),
+        state_class(node.state)
+    )
+    .unwrap();
 }
 
 fn write_mermaid_class_defs(output: &mut String) {
@@ -210,6 +308,11 @@ fn write_mermaid_class_defs(output: &mut String) {
         "  classDef timeline fill:transparent,stroke:transparent,color:transparent;"
     )
     .unwrap();
+    writeln!(
+        output,
+        "  classDef scopeempty fill:#f5f5f5,stroke:#9e9e9e,color:#1b1f23,stroke-dasharray:3 3;"
+    )
+    .unwrap();
 }
 
 fn render_dot_snapshot_body(
@@ -218,36 +321,141 @@ fn render_dot_snapshot_body(
     indent: &str,
     node_prefix: &str,
 ) {
-    for node in snapshot.nodes.values() {
-        writeln!(
+    let subgraph_labels = snapshot_subgraph_labels(snapshot);
+    for node in snapshot.nodes.values().filter(|node| {
+        node.subgraph_id
+            .map(|id| !snapshot.subgraphs.contains_key(&id))
+            .unwrap_or(true)
+    }) {
+        render_dot_node(output, node, indent, node_prefix, &subgraph_labels);
+    }
+
+    for subgraph in snapshot.subgraphs.values().filter(|subgraph| {
+        subgraph
+            .parent
+            .map(|parent| !snapshot.subgraphs.contains_key(&parent))
+            .unwrap_or(true)
+    }) {
+        render_dot_subgraph(
             output,
-            "{indent}{} [label=\"{}\", style=filled, fillcolor=\"{}\"] ;",
-            node_ref(node_prefix, node.id),
-            dot_escape(&render_node_label(node, "\\n")),
-            dot_fill(node.state)
-        )
-        .unwrap();
+            snapshot,
+            subgraph,
+            indent,
+            node_prefix,
+            &subgraph_labels,
+        );
     }
 
     for (edge, state) in &snapshot.edges {
         writeln!(
             output,
             "{indent}{} -> {} [label=\"{}\"] ;",
-            node_ref(node_prefix, edge.dependent),
             node_ref(node_prefix, edge.dependency),
+            node_ref(node_prefix, edge.dependent),
             edge_state_name(*state)
         )
         .unwrap();
     }
 }
 
-fn render_change(change: &GraphChange, node_labels: &BTreeMap<NodeId, String>) -> String {
+fn render_dot_subgraph(
+    output: &mut String,
+    snapshot: &GraphSnapshot,
+    subgraph: &SubgraphSnapshot,
+    indent: &str,
+    node_prefix: &str,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) {
+    let child_indent = format!("{indent}  ");
+    let reference = subgraph_ref(node_prefix, subgraph.id);
+    writeln!(output, "{indent}subgraph cluster_{reference} {{").unwrap();
+    writeln!(
+        output,
+        "{child_indent}label=\"{}\";",
+        dot_escape(&subgraph_name(subgraph))
+    )
+    .unwrap();
+
+    for node in &subgraph.nodes {
+        if let Some(node) = snapshot.nodes.get(node) {
+            render_dot_node(output, node, &child_indent, node_prefix, subgraph_labels);
+        }
+    }
+
+    for child in &subgraph.children {
+        if let Some(child) = snapshot.subgraphs.get(child) {
+            render_dot_subgraph(
+                output,
+                snapshot,
+                child,
+                &child_indent,
+                node_prefix,
+                subgraph_labels,
+            );
+        }
+    }
+
+    if subgraph.nodes.is_empty() && subgraph.children.is_empty() {
+        writeln!(
+            output,
+            "{child_indent}{reference}_empty [label=\"no attributes\", shape=plaintext];"
+        )
+        .unwrap();
+    }
+
+    writeln!(output, "{indent}}}").unwrap();
+}
+
+fn render_dot_node(
+    output: &mut String,
+    node: &NodeSnapshot,
+    indent: &str,
+    node_prefix: &str,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) {
+    writeln!(
+        output,
+        "{indent}{} [label=\"{}\", style=filled, fillcolor=\"{}\"] ;",
+        node_ref(node_prefix, node.id),
+        dot_escape(&render_node_label(node, "\\n", subgraph_labels)),
+        dot_fill(node.state)
+    )
+    .unwrap();
+}
+
+fn render_change(
+    change: &GraphChange,
+    node_labels: &BTreeMap<NodeId, String>,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
     match change {
+        GraphChange::SubgraphAdded(subgraph) => format!(
+            "subgraph {} added parent={} nodes={}",
+            subgraph_name(subgraph),
+            render_optional_subgraph(subgraph.parent, subgraph_labels),
+            render_ids(&subgraph.nodes)
+        ),
+        GraphChange::SubgraphRemoved(subgraph) => format!(
+            "subgraph {} removed parent={} nodes={}",
+            subgraph_name(subgraph),
+            render_optional_subgraph(subgraph.parent, subgraph_labels),
+            render_ids(&subgraph.nodes)
+        ),
         GraphChange::NodeAdded(node) => {
-            format!("node {} added ({})", node_name(node), node_kind(node))
+            format!(
+                "node {} added ({}){}",
+                node_name(node),
+                node_kind(node),
+                render_node_scope_suffix(node, subgraph_labels)
+            )
         }
         GraphChange::NodeRemoved(node) => {
-            format!("node {} removed ({})", node_name(node), node_kind(node))
+            format!(
+                "node {} removed ({}){}",
+                node_name(node),
+                node_kind(node),
+                render_node_scope_suffix(node, subgraph_labels)
+            )
         }
         GraphChange::NodeStateChanged { id, before, after } => format!(
             "node {} state {} -> {}",
@@ -288,12 +496,32 @@ fn render_change(change: &GraphChange, node_labels: &BTreeMap<NodeId, String>) -
     }
 }
 
-fn render_node_line(node: &NodeSnapshot) -> String {
+fn render_subgraph_line(
+    subgraph: &SubgraphSnapshot,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
+    format!(
+        "{} parent={} children={} nodes={}",
+        subgraph_name(subgraph),
+        render_optional_subgraph(subgraph.parent, subgraph_labels),
+        render_subgraph_ids(&subgraph.children, subgraph_labels),
+        render_ids(&subgraph.nodes)
+    )
+}
+
+fn render_node_line(node: &NodeSnapshot, subgraph_labels: &BTreeMap<SubgraphId, String>) -> String {
     let mut pieces = vec![
         node_name(node),
         node_kind(node).to_string(),
         state_name(node.state).to_string(),
     ];
+
+    if let Some(subgraph) = node.subgraph_id {
+        pieces.push(format!(
+            "subgraph={}",
+            labeled_subgraph_id(subgraph, subgraph_labels)
+        ));
+    }
 
     if let Some(value_type) = &node.value_type {
         pieces.push(format!("type={value_type}"));
@@ -312,13 +540,24 @@ fn render_node_line(node: &NodeSnapshot) -> String {
     pieces.join(" ")
 }
 
-fn render_node_label(node: &NodeSnapshot, line_break: &str) -> String {
+fn render_node_label(
+    node: &NodeSnapshot,
+    line_break: &str,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
     let mut label = format!(
         "{}{line_break}{} {}",
         node_name(node),
         node_kind(node),
         state_name(node.state)
     );
+
+    if let Some(subgraph) = node.subgraph_id {
+        label.push_str(&format!(
+            "{line_break}subgraph: {}",
+            labeled_subgraph_id(subgraph, subgraph_labels)
+        ));
+    }
 
     if let Some(debug_name) = &node.debug_name {
         label.push_str(&format!("{line_break}rule: {debug_name}"));
@@ -344,6 +583,34 @@ fn render_ids(ids: &[NodeId]) -> String {
     format!("[{}]", ids.join(", "))
 }
 
+fn render_subgraph_ids(
+    ids: &[SubgraphId],
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
+    let ids = ids
+        .iter()
+        .map(|id| labeled_subgraph_id(*id, subgraph_labels))
+        .collect::<Vec<_>>();
+    format!("[{}]", ids.join(", "))
+}
+
+fn render_optional_subgraph(
+    id: Option<SubgraphId>,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
+    id.map(|id| labeled_subgraph_id(id, subgraph_labels))
+        .unwrap_or_else(|| "<root>".to_string())
+}
+
+fn render_node_scope_suffix(
+    node: &NodeSnapshot,
+    subgraph_labels: &BTreeMap<SubgraphId, String>,
+) -> String {
+    node.subgraph_id
+        .map(|id| format!(" subgraph={}", labeled_subgraph_id(id, subgraph_labels)))
+        .unwrap_or_default()
+}
+
 fn render_optional_value(value: Option<&ValueSummary>) -> String {
     value
         .map(render_value)
@@ -365,6 +632,13 @@ fn labeled_id(id: NodeId, node_labels: &BTreeMap<NodeId, String>) -> String {
         .unwrap_or_else(|| id_name(id))
 }
 
+fn labeled_subgraph_id(id: SubgraphId, subgraph_labels: &BTreeMap<SubgraphId, String>) -> String {
+    subgraph_labels
+        .get(&id)
+        .map(|label| format!("{label} ({id})"))
+        .unwrap_or_else(|| id.to_string())
+}
+
 fn node_name(node: &NodeSnapshot) -> String {
     node.label
         .as_ref()
@@ -380,8 +654,33 @@ fn snapshot_node_labels(snapshot: &GraphSnapshot) -> BTreeMap<NodeId, String> {
         .collect()
 }
 
+fn snapshot_subgraph_labels(snapshot: &GraphSnapshot) -> BTreeMap<SubgraphId, String> {
+    snapshot
+        .subgraphs
+        .values()
+        .filter_map(|subgraph| {
+            subgraph
+                .label
+                .as_ref()
+                .map(|label| (subgraph.id, label.clone()))
+        })
+        .collect()
+}
+
+fn subgraph_name(subgraph: &SubgraphSnapshot) -> String {
+    subgraph
+        .label
+        .as_ref()
+        .map(|label| format!("{label} ({})", subgraph.id))
+        .unwrap_or_else(|| subgraph.id.to_string())
+}
+
 fn node_ref(prefix: &str, id: NodeId) -> String {
     format!("{prefix}n{}", id.raw())
+}
+
+fn subgraph_ref(prefix: &str, id: SubgraphId) -> String {
+    format!("{prefix}sg{}", id.raw())
 }
 
 fn node_kind(node: &NodeSnapshot) -> &'static str {

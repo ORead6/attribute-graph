@@ -96,9 +96,11 @@ semantics.
 
 ## Current Limitations
 
-- There is no graph-native collection, ordering, keyed diff, or grouped removal.
-- A consumer whose graph outlives its adapter must explicitly remove every node
-  group before discarding the adapter.
+- There is no graph-native collection, ordering, or keyed diff. Subgraphs group
+  node lifetimes, but the consumer still decides collection membership.
+- A consumer whose graph outlives its adapter can remove the adapter's owning
+  subgraph recursively; any deliberately unowned nodes still require individual
+  removal.
 - Conditional branches must use handles already stored in the immutable rule.
 - The graph is pull-based; the UI layer decides when to render and read outputs.
 - There is no multi-source transaction or animation transaction.

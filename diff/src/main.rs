@@ -28,6 +28,7 @@ enum Scenario {
     Basic,
     SameOutput,
     Conditional,
+    Subgraph,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,6 +88,11 @@ struct ConditionalPriceRule {
     use_sale_price: Attribute<bool>,
     sale_price: Attribute<i64>,
     regular_price: Attribute<i64>,
+}
+
+#[derive(Debug)]
+struct ForwardViewMetricRule {
+    input: Attribute<i64>,
 }
 
 fn main() -> ExitCode {
@@ -198,6 +204,7 @@ fn parse_scenario(value: &str) -> Result<Scenario, CliError> {
         "basic" => Ok(Scenario::Basic),
         "same-output" => Ok(Scenario::SameOutput),
         "conditional" => Ok(Scenario::Conditional),
+        "subgraph" => Ok(Scenario::Subgraph),
         _ => Err(CliError::UnknownScenario(value.to_string())),
     }
 }
@@ -207,22 +214,24 @@ fn scenario_name(scenario: Scenario) -> &'static str {
         Scenario::Basic => "basic",
         Scenario::SameOutput => "same-output",
         Scenario::Conditional => "conditional",
+        Scenario::Subgraph => "subgraph",
     }
 }
 
 fn usage() -> &'static str {
-    "Usage: cargo run --manifest-path diff/Cargo.toml -- [--scenario basic|same-output|conditional] [--format text|mermaid|dot|all]\n\
+    "Usage: cargo run --manifest-path diff/Cargo.toml -- [--scenario basic|same-output|conditional|subgraph] [--format text|mermaid|dot|all]\n\
      \n\
      Runs a built-in AttributeGraph scenario and prints graph diffs for visual debugging.\n\
      Default scenario: basic\n\
      Default format: all"
 }
 
-fn run_scenario(scenario: Scenario) -> Result<DiffSession, GraphError> {
+fn run_scenario(scenario: Scenario) -> Result<DiffSession, CliError> {
     match scenario {
-        Scenario::Basic => run_basic_scenario(),
-        Scenario::SameOutput => run_same_output_scenario(),
-        Scenario::Conditional => run_conditional_scenario(),
+        Scenario::Basic => Ok(run_basic_scenario()?),
+        Scenario::SameOutput => Ok(run_same_output_scenario()?),
+        Scenario::Conditional => Ok(run_conditional_scenario()?),
+        Scenario::Subgraph => run_subgraph_scenario(),
     }
 }
 
@@ -379,6 +388,52 @@ fn run_conditional_scenario() -> Result<DiffSession, GraphError> {
     Ok(session)
 }
 
+fn run_subgraph_scenario() -> Result<DiffSession, CliError> {
+    let mut graph = AttributeGraph::new();
+    let mut session = DiffSession::new();
+
+    let (settings_screen, (account_row, row_height, screen_content_height)) = graph
+        .build_subgraph(None, |graph, settings_screen| {
+            let account_row = graph.create_subgraph(Some(settings_screen))?;
+            let row_height =
+                graph.with_subgraph(account_row, |graph| graph.add_static_attribute(44_i64))?;
+            let screen_content_height = graph.add_dynamic_attribute::<i64>(boxed_rule(
+                ForwardViewMetricRule {
+                    input: row_height.attribute(),
+                },
+                update_forward_view_metric,
+                I64,
+                "SettingsScreen.contentHeight",
+            ))?;
+
+            Ok((account_row, row_height, screen_content_height))
+        })?;
+
+    session.label_subgraph(settings_screen, "SettingsScreen");
+    session.label_subgraph(account_row, "AccountRow");
+    session.label_attribute(row_height.attribute(), "AccountRow.height");
+    session.label_attribute(
+        screen_content_height.attribute(),
+        "SettingsScreen.contentHeight",
+    );
+    session.capture("mounted SettingsScreen > AccountRow", &graph)?;
+
+    let _ = graph.read(screen_content_height)?;
+    session.capture("resolved layout", &graph)?;
+
+    let removal = graph.remove_subgraph(settings_screen)?;
+    session.capture(
+        format!(
+            "unmounted SettingsScreen recursively ({} scopes, {} attributes)",
+            removal.subgraphs.len(),
+            removal.nodes.len()
+        ),
+        &graph,
+    )?;
+
+    Ok(session)
+}
+
 fn boxed_rule<T: 'static>(
     body: T,
     update: UpdateFn,
@@ -449,5 +504,15 @@ fn update_conditional_price(
     };
 
     context.set_output_value(selected_price);
+    Ok(())
+}
+
+fn update_forward_view_metric(
+    handle: RuleHandle,
+    context: &mut EvaluationContext<'_>,
+) -> Result<(), GraphError> {
+    let rule = rule_body::<ForwardViewMetricRule>(handle);
+    let value = context.read_attribute(rule.input)?;
+    context.set_output_value(value);
     Ok(())
 }

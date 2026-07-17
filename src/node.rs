@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::dependency::sorted_ids;
-use crate::identity::NodeId;
+use crate::identity::{NodeId, SubgraphId};
 use crate::rule::RuleDescriptor;
 use crate::value::{TypeDescriptor, ValueStorage};
 
@@ -37,6 +37,7 @@ pub enum NodeState {
 #[derive(Debug)]
 pub struct Node {
     pub(crate) id: NodeId,
+    pub(crate) subgraph: Option<SubgraphId>,
     pub(crate) kind: NodeKind,
     pub(crate) state: NodeState,
     pub(crate) value: Option<ValueStorage>,
@@ -47,6 +48,13 @@ pub struct Node {
 impl Node {
     pub const fn id(&self) -> NodeId {
         self.id
+    }
+
+    /// Return the optional subgraph that owns this node.
+    ///
+    /// Nodes created outside a subgraph return `None`.
+    pub const fn subgraph_id(&self) -> Option<SubgraphId> {
+        self.subgraph
     }
 
     pub const fn kind(&self) -> NodeKind {

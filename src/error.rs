@@ -1,9 +1,14 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::identity::{GraphId, NodeId};
+use crate::identity::{GraphId, NodeId, SubgraphId};
 use crate::value::TypeDescriptor;
 
+/// Errors reported by graph operations.
+///
+/// This enum is non-exhaustive so the runtime can add precise failure contracts
+/// without forcing downstream callers to enumerate every future variant.
+#[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GraphError {
     GraphMismatch {
@@ -11,6 +16,8 @@ pub enum GraphError {
         actual: GraphId,
     },
     MissingNode(NodeId),
+    MissingSubgraph(SubgraphId),
+    SubgraphInUse(SubgraphId),
     MissingValue(NodeId),
     MissingOutput(NodeId),
     NotSource(NodeId),
@@ -37,9 +44,11 @@ impl fmt::Display for GraphError {
         match self {
             Self::GraphMismatch { expected, actual } => write!(
                 f,
-                "node belongs to graph {actual}, but this operation uses graph {expected}"
+                "handle belongs to graph {actual}, but this operation uses graph {expected}"
             ),
             Self::MissingNode(id) => write!(f, "missing node {id}"),
+            Self::MissingSubgraph(id) => write!(f, "missing subgraph {id}"),
+            Self::SubgraphInUse(id) => write!(f, "subgraph {id} is still in use"),
             Self::MissingValue(id) => write!(f, "node {id} has no cached value"),
             Self::MissingOutput(id) => {
                 write!(f, "rule for node {id} did not set an output value")

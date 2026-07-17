@@ -21,7 +21,8 @@ values.
 - Nested derived values, caching, and lazy invalidation.
 - `Clean`, `Dirty`, and `MaybeDirty` state propagation.
 - Bytewise change detection and an `AlwaysChanged` policy.
-- Graph-scoped node identity, cycle rejection, removal, and inspection.
+- Graph-scoped node and subgraph identity, cycle rejection, removal, and inspection.
+- Nested ownership regions with scoped construction and recursive teardown.
 - Recovery from provisional evaluation failures without poisoning the graph.
 
 ### What it expects from the next layer
@@ -33,8 +34,8 @@ values.
   declared type.
 - The consumer explicitly reads the outputs it needs; the graph does not push
   values or schedule rendering.
-- The consumer owns structural identity, node groups, and two-phase replacement
-  when a rule's fixed handle set changes.
+- The consumer decides where ownership regions begin and end, and uses
+  two-phase replacement when a rule's fixed handle set changes.
 - Opaque rule bodies remain on one owning thread until their cross-thread safety
   contract is encoded in the API.
 
@@ -49,6 +50,22 @@ values.
 The graph does **not** return a render patch, a complete transitive work list, or
 an event stream. The next layer decides what constitutes a render root and when
 to read it.
+
+## Subgraphs
+
+A subgraph is an ownership and lifetime region inside one `AttributeGraph`, not
+a separate evaluation graph. Nodes created in a construction scope belong to
+the innermost active scope. Parentage is fixed, and removing a subgraph
+atomically and permanently removes its descendants and owned nodes while
+invalidating surviving dependents connected by active edges.
+
+IDs are never reused, so stale node handles return `MissingNode`. The graph
+cannot discover opaque handles stored in an inactive conditional path; choosing
+such a handle after its target is removed also returns `MissingNode`. Destroy
+callbacks run only after structural detachment and are release-only. V1 does
+not include detach/reinsert, scheduling, rendering, or cross-graph
+dependencies. See [Subgraph V1 Contract](docs/subgraphs.md) for the complete
+lifetime and failure contract.
 
 ## Core Mental Model
 
@@ -141,6 +158,8 @@ providers.
 | Read a fresh value | `read` | `read_value` | Lazily validates and returns a value or `GraphError` |
 | Explicitly validate/update | `update_dynamic` | `update_node` | Returns a node-local `UpdateOutcome` |
 | Remove a node | — | `remove_node` | Invalidates dependents, detaches edges, and returns `Option<Node>` |
+| Build an ownership region | — | `create_subgraph`, `with_subgraph`, or `build_subgraph` | Automatically owns nodes created in the active scope |
+| Remove an ownership region | — | `remove_subgraph` | Recursively detaches descendants and returns a `SubgraphRemoval` summary |
 | Inspect the graph | handle `.id()` | `node`, `dependencies_of`, `edges`, and related methods | Current committed graph metadata |
 
 ### Source writes
@@ -318,8 +337,9 @@ identity of `(GraphId, graph-local number)`, displayed as `g1:n0`.
 - IDs are not reused within a graph, but they are not persistent or
   cross-process identifiers.
 - Result-returning operations reject foreign handles with `GraphMismatch`.
-- Optional lookup and removal methods treat missing or foreign handles as
-  absent and return `None`.
+- Optional lookups and `remove_node` treat missing or foreign handles as absent
+  and return `None`; `remove_subgraph` is result-returning and reports the
+  corresponding error.
 
 ### Removing nodes
 
@@ -336,8 +356,9 @@ A configured destroy callback runs when that returned node is dropped, not
 necessarily at the moment `remove_node` is called. A removed source node has no
 rule. Dropping the graph drops all descriptors it still owns.
 
-The next layer must track groups of nodes and choose safe lifetime order. Retire
-old groups from downstream dependents toward their inputs.
+For individual removal, the next layer must still choose safe lifetime order.
+Use a subgraph when a group and its nested children should instead have one
+recursive lifetime boundary.
 
 ## Failure And Recovery
 
@@ -390,7 +411,7 @@ The intended ownership boundary is:
 | Dependency discovery and committed edges | Collection keys, order, membership, and cell reuse |
 | Lazy validation and value comparison | Scheduling and deciding when to read/render |
 | Per-node update metadata and recovery | Render patches, widgets, and platform view mutation |
-| Edge and storage cleanup after removal | Node-group lifetime and downstream rebuild order |
+| Edge and storage cleanup plus scoped group teardown | Choosing ownership regions and downstream rebuild order |
 | Graph identity and cycle checks | Gesture recognition, clocks, easing, and transactions |
 
 A practical integration loop is:
@@ -486,17 +507,23 @@ Or choose a scenario and output format:
 
 ```sh
 cargo run --manifest-path diff/Cargo.toml -- --scenario conditional --format mermaid
+cargo run --manifest-path diff/Cargo.toml -- --scenario subgraph --format mermaid
 ```
 
-Available scenarios are `basic`, `same-output`, and `conditional`. Visualizer
-arrows point from a dependent attribute to the dependency it reads, while the
-framework stores edges internally in dependency-to-dependent order.
+Available scenarios are `basic`, `same-output`, `conditional`, and `subgraph`.
+The SwiftUI-style `subgraph` scenario renders nested `SettingsScreen` and
+`AccountRow` ownership scopes, one cross-scope layout dependency, and recursive
+teardown across three snapshots. Mermaid and DOT group owned attributes inside
+labeled subgraph containers. The arrow points from `AccountRow.height` to the
+dependent `SettingsScreen.contentHeight`, matching the framework's internal
+dependency-to-dependent edge order.
 
 ## Explicit Non-Goals
 
 The fundamental graph currently does not provide:
 
-- native lists, `foreach`, ordering, keyed diffing, or grouped subgraph scopes;
+- native lists, `foreach`, ordering, or keyed diffing;
+- subgraph detach/reinsert, suspension, scheduling, or rendering semantics;
 - an observer/push system, scheduler, renderer, or render-patch format;
 - batching, graph-wide transactions, frame transactions, or animation
   transactions;
@@ -517,12 +544,14 @@ responsibilities.
 private modules, and the existing crate-root API is re-exported unchanged:
 
 - `attribute.rs`: typed static, dynamic, and erased attribute handles;
-- `identity.rs`: graph and node identities plus graph-id allocation;
+- `identity.rs`: graph, node, and subgraph identities plus graph-id allocation;
 - `value.rs`: type descriptors, value storage, comparison, and typed codecs;
 - `rule.rs`: opaque rule handles, callbacks, descriptors, and destruction;
 - `node.rs`: node kind, state, cached storage, and dependency ownership;
 - `dependency.rs`: edges, edge states, dependency changes, and update outcomes;
 - `error.rs`: the graph error contract;
+- `subgraph.rs`: ownership hierarchy inspection and removal summaries;
+- `graph/subgraphs.rs`: scoped construction and recursive teardown algorithms;
 - `graph.rs`: graph storage, lazy evaluation, invalidation, inspection, and
   evaluation context behavior.
 
@@ -541,6 +570,12 @@ Run only the UI consumer contracts:
 
 ```sh
 cargo test --test ui_consumer_contracts
+```
+
+Run only the subgraph lifecycle contracts:
+
+```sh
+cargo test --test subgraphs
 ```
 
 Run the visualizer tests:

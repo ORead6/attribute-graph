@@ -4,10 +4,13 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use crate::attribute::{Attribute, DynamicAttribute, StaticAttribute, decode_attribute_value};
 use crate::dependency::{DependencyChangeSet, Edge, EdgeState, UpdateOutcome, sorted_ids};
 use crate::error::GraphError;
-use crate::identity::{GraphId, NodeId, next_graph_id};
+use crate::identity::{GraphId, NodeId, SubgraphId, next_graph_id};
 use crate::node::{Node, NodeKind, NodeState};
 use crate::rule::RuleDescriptor;
+use crate::subgraph::Subgraph;
 use crate::value::{AttributeValue, TypeDescriptor, ValueStorage};
+
+mod subgraphs;
 
 /// Runtime storage for attributes, dependencies, dirty state, and rule dispatch.
 ///
@@ -20,10 +23,13 @@ pub struct AttributeGraph {
     // later once the behavior is right and stable node indices matter.
     id: GraphId,
     nodes: HashMap<NodeId, Node>,
+    subgraphs: HashMap<SubgraphId, Subgraph>,
     dependents: HashMap<NodeId, HashSet<NodeId>>,
     pending_edges: HashSet<Edge>,
     evaluation_stack: Vec<NodeId>,
+    construction_subgraphs: Vec<SubgraphId>,
     next_node_id: u64,
+    next_subgraph_id: u64,
 }
 
 impl Default for AttributeGraph {
@@ -31,10 +37,13 @@ impl Default for AttributeGraph {
         Self {
             id: next_graph_id(),
             nodes: HashMap::new(),
+            subgraphs: HashMap::new(),
             dependents: HashMap::new(),
             pending_edges: HashSet::new(),
             evaluation_stack: Vec::new(),
+            construction_subgraphs: Vec::new(),
             next_node_id: 0,
+            next_subgraph_id: 0,
         }
     }
 }
@@ -99,11 +108,13 @@ impl AttributeGraph {
     /// the graph. When a source changes, dependents are marked dirty.
     pub fn add_source(&mut self, value: ValueStorage) -> NodeId {
         let id = self.next_id();
+        let subgraph = self.register_node_with_current_subgraph(id);
 
         self.nodes.insert(
             id,
             Node {
                 id,
+                subgraph,
                 kind: NodeKind::Source,
                 state: NodeState::Clean,
                 value: Some(value),
@@ -123,11 +134,13 @@ impl AttributeGraph {
     /// the first `update_node` call runs the rule and fills the cache.
     pub fn add_derived(&mut self, rule: RuleDescriptor) -> NodeId {
         let id = self.next_id();
+        let subgraph = self.register_node_with_current_subgraph(id);
 
         self.nodes.insert(
             id,
             Node {
                 id,
+                subgraph,
                 kind: NodeKind::Derived,
                 state: NodeState::Dirty,
                 value: None,
@@ -154,6 +167,12 @@ impl AttributeGraph {
         self.mark_changed(id)
             .expect("a node checked above should be valid in this graph");
         let node = self.nodes.remove(&id)?;
+
+        if let Some(subgraph) = node.subgraph
+            && let Some(subgraph) = self.subgraphs.get_mut(&subgraph)
+        {
+            subgraph.nodes.remove(&id);
+        }
 
         for dependency in &node.active_dependencies {
             if let Some(dependents) = self.dependents.get_mut(dependency) {

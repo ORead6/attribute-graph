@@ -3,8 +3,8 @@
 use attribute_graph::{
     Attribute, AttributeGraph, AttributeValue, DependencyChangeSet, DestroyFn, DynamicAttribute,
     Edge, EdgeState, EvaluationContext, GraphError, GraphId, Node, NodeId, NodeKind, NodeState,
-    RuleDescriptor, RuleHandle, StaticAttribute, TypeDescriptor, UpdateFn, UpdateOutcome,
-    ValueComparison, ValueStorage,
+    RuleDescriptor, RuleHandle, StaticAttribute, Subgraph, SubgraphId, SubgraphRemoval,
+    TypeDescriptor, UpdateFn, UpdateOutcome, ValueComparison, ValueStorage,
 };
 
 fn assert_public_type<T>() {}
@@ -29,6 +29,9 @@ fn original_crate_root_exports_remain_available() {
     assert_public_type::<RuleDescriptor>();
     assert_public_type::<RuleHandle>();
     assert_public_type::<StaticAttribute<i64>>();
+    assert_public_type::<Subgraph>();
+    assert_public_type::<SubgraphId>();
+    assert_public_type::<SubgraphRemoval>();
     assert_public_type::<TypeDescriptor>();
     assert_public_type::<UpdateOutcome>();
     assert_public_type::<ValueComparison>();

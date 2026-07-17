@@ -36,8 +36,8 @@ fn cli_prints_mermaid_when_requested() {
     assert!(stdout.contains("MaybeDirty"));
     assert!(stdout.contains("Pending"));
     assert!(stdout.contains("Settled"));
-    assert!(stdout.contains("s3_n3 -->|\"Pending\"| s3_n0"));
-    assert!(stdout.contains("s3_n4 -->|\"Pending\"| s3_n3"));
+    assert!(stdout.contains("s3_n0 -->|\"Pending\"| s3_n3"));
+    assert!(stdout.contains("s3_n3 -->|\"Pending\"| s3_n4"));
 }
 
 #[test]
@@ -91,6 +91,89 @@ fn cli_can_run_the_conditional_scenario() {
         stdout.contains("edge selected price (#3) depends on regular price (#2) added (Settled)")
     );
     assert!(stdout.contains("Diff: inactive sale price changed -> active regular price changed"));
+}
+
+#[test]
+fn cli_can_run_the_swiftui_style_subgraph_lifecycle_scenario() {
+    let output = Command::new(env!("CARGO_BIN_EXE_attribute_graph_diff"))
+        .args(["--scenario", "subgraph", "--format", "text"])
+        .output()
+        .expect("cli should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    assert!(stdout.contains("Snapshot: mounted SettingsScreen > AccountRow"));
+    assert!(
+        stdout.contains(
+            "SettingsScreen (g1:s0) parent=<root> children=[AccountRow (g1:s1)] nodes=[#1]"
+        )
+    );
+    assert!(
+        stdout.contains("AccountRow (g1:s1) parent=SettingsScreen (g1:s0) children=[] nodes=[#0]")
+    );
+    assert!(stdout.contains("AccountRow.height (#0) Source Clean"));
+    assert!(stdout.contains("SettingsScreen.contentHeight (#1) Derived Dirty"));
+    assert!(stdout.contains("Diff: mounted SettingsScreen > AccountRow -> resolved layout"));
+    assert!(stdout.contains(
+        "edge SettingsScreen.contentHeight (#1) depends on AccountRow.height (#0) added (Settled)"
+    ));
+    assert!(stdout.contains(
+        "Diff: resolved layout -> unmounted SettingsScreen recursively (2 scopes, 2 attributes)"
+    ));
+    assert!(
+        stdout.contains("node AccountRow.height (#0) removed (Source) subgraph=AccountRow (g1:s1)")
+    );
+    assert!(stdout.contains(
+        "node SettingsScreen.contentHeight (#1) removed (Derived) subgraph=SettingsScreen (g1:s0)"
+    ));
+    assert!(!stdout.contains("UIHostingView"));
+    assert!(!stdout.contains("Window.layoutHeight"));
+}
+
+#[test]
+fn subgraph_mermaid_groups_attributes_by_nested_swiftui_view_scope() {
+    let output = Command::new(env!("CARGO_BIN_EXE_attribute_graph_diff"))
+        .args(["--scenario=subgraph", "--format", "mermaid"])
+        .output()
+        .expect("cli should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    assert!(stdout.contains("subgraph s0_sg0[\"SettingsScreen (g1:s0)\"]"));
+    assert!(stdout.contains("subgraph s0_sg1[\"AccountRow (g1:s1)\"]"));
+    assert!(stdout.contains("subgraph: SettingsScreen (g1:s0)"));
+    assert!(stdout.contains("subgraph: AccountRow (g1:s1)"));
+    assert!(stdout.contains("s1_n0 -->|\"Settled\"| s1_n1"));
+    assert!(stdout.contains("snapshot2[\"unmounted SettingsScreen recursively"));
+    assert!(stdout.contains("s2_empty[\"empty graph\"]"));
+    assert!(!stdout.contains("subgraph s2_sg0[\"SettingsScreen"));
+    assert!(!stdout.contains("subgraph s2_sg1[\"AccountRow"));
+    assert!(!stdout.contains("s1_n2"));
+}
+
+#[test]
+fn subgraph_dot_timeline_groups_scopes_and_shows_recursive_removal() {
+    let output = Command::new(env!("CARGO_BIN_EXE_attribute_graph_diff"))
+        .args(["--scenario", "subgraph", "--format", "dot"])
+        .output()
+        .expect("cli should run");
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    assert!(
+        stdout.contains("    subgraph cluster_s0_sg0 {\n      label=\"SettingsScreen (g1:s0)\";")
+    );
+    assert!(
+        stdout.contains("      subgraph cluster_s0_sg1 {\n        label=\"AccountRow (g1:s1)\";")
+    );
+    assert!(stdout.contains("s1_n0 -> s1_n1 [label=\"Settled\"]"));
+    assert!(stdout.contains("label=\"unmounted SettingsScreen recursively"));
+    assert!(!stdout.contains("subgraph cluster_s2_sg0"));
+    assert!(!stdout.contains("subgraph cluster_s2_sg1"));
+    assert!(!stdout.contains("s1_n2"));
 }
 
 #[test]

@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use attribute_graph::{
-    AttributeGraph, Edge, EdgeState, GraphError, NodeId, NodeKind, NodeState, ValueComparison,
-    ValueStorage,
+    AttributeGraph, Edge, EdgeState, GraphError, NodeId, NodeKind, NodeState, SubgraphId,
+    ValueComparison, ValueStorage,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphSnapshot {
     pub label: String,
+    pub subgraphs: BTreeMap<SubgraphId, SubgraphSnapshot>,
     pub nodes: BTreeMap<NodeId, NodeSnapshot>,
     pub edges: BTreeMap<Edge, EdgeState>,
     pub pending_edges: Vec<Edge>,
@@ -23,6 +24,31 @@ impl GraphSnapshot {
         graph: &AttributeGraph,
         node_labels: &BTreeMap<NodeId, String>,
     ) -> Result<Self, GraphError> {
+        Self::capture_with_label_maps(label, graph, node_labels, &BTreeMap::new())
+    }
+
+    pub fn capture_with_label_maps(
+        label: impl Into<String>,
+        graph: &AttributeGraph,
+        node_labels: &BTreeMap<NodeId, String>,
+        subgraph_labels: &BTreeMap<SubgraphId, String>,
+    ) -> Result<Self, GraphError> {
+        let mut subgraphs = BTreeMap::new();
+
+        for id in graph.subgraphs() {
+            let subgraph = graph.subgraph(id).ok_or(GraphError::MissingSubgraph(id))?;
+            subgraphs.insert(
+                id,
+                SubgraphSnapshot {
+                    id,
+                    label: subgraph_labels.get(&id).cloned(),
+                    parent: subgraph.parent(),
+                    children: subgraph.children(),
+                    nodes: subgraph.nodes(),
+                },
+            );
+        }
+
         let mut nodes = BTreeMap::new();
 
         for id in graph.topological_order()? {
@@ -34,6 +60,7 @@ impl GraphSnapshot {
                 NodeSnapshot {
                     id,
                     label: node_labels.get(&id).cloned(),
+                    subgraph_id: node.subgraph_id(),
                     kind: node.kind(),
                     state: node.state(),
                     value_type: node
@@ -54,6 +81,7 @@ impl GraphSnapshot {
 
         Ok(Self {
             label: label.into(),
+            subgraphs,
             nodes,
             edges,
             pending_edges: graph.pending_edges(),
@@ -66,9 +94,19 @@ impl GraphSnapshot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubgraphSnapshot {
+    pub id: SubgraphId,
+    pub label: Option<String>,
+    pub parent: Option<SubgraphId>,
+    pub children: Vec<SubgraphId>,
+    pub nodes: Vec<NodeId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeSnapshot {
     pub id: NodeId,
     pub label: Option<String>,
+    pub subgraph_id: Option<SubgraphId>,
     pub kind: NodeKind,
     pub state: NodeState,
     pub value_type: Option<String>,

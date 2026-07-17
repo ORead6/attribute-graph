@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use attribute_graph::{Attribute, AttributeGraph, GraphError, NodeId};
+use attribute_graph::{Attribute, AttributeGraph, GraphError, NodeId, SubgraphId};
 
 use crate::{GraphDiff, GraphSnapshot};
 
@@ -9,6 +9,7 @@ pub struct DiffSession {
     snapshots: Vec<GraphSnapshot>,
     diffs: Vec<GraphDiff>,
     node_labels: BTreeMap<NodeId, String>,
+    subgraph_labels: BTreeMap<SubgraphId, String>,
 }
 
 impl DiffSession {
@@ -24,12 +25,21 @@ impl DiffSession {
         self.label_node(attribute.id(), label);
     }
 
+    pub fn label_subgraph(&mut self, id: SubgraphId, label: impl Into<String>) {
+        self.subgraph_labels.insert(id, label.into());
+    }
+
     pub fn capture(
         &mut self,
         label: impl Into<String>,
         graph: &AttributeGraph,
     ) -> Result<&GraphSnapshot, GraphError> {
-        let snapshot = GraphSnapshot::capture_with_labels(label, graph, &self.node_labels)?;
+        let snapshot = GraphSnapshot::capture_with_label_maps(
+            label,
+            graph,
+            &self.node_labels,
+            &self.subgraph_labels,
+        )?;
 
         if let Some(before) = self.snapshots.last() {
             self.diffs.push(GraphDiff::between(before, &snapshot));
